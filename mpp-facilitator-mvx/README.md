@@ -12,6 +12,7 @@ A high-performance facilitator microservice for the **Mobile Payment Protocol (M
 - **xExchange-aware Quotes**: `swap-sim` prefers live xExchange MEX pair metadata and falls back to public token metadata heuristics when no active route exists.
 - **Execution Planning**: `swap-plan` returns an execution-oriented action list with pair addresses, min-output targets, and slippage suggestions for fixed-input swaps.
 - **Transaction Templates**: `swap-plan` now embeds smart-contract execute templates for supported pair hops, plus optional EGLD wrap/unwrap templates when a WEGLD swap contract address is configured.
+- **Dynamic Chaining**: downstream swap hops and unwrap steps can reference the previous action's output amount instead of hardcoding only one estimated value.
 - **Security**: HMAC-SHA256 bound challenge IDs, rate limiting, and TTL-based challenge expiration.
 - **Production Ready**: Full test coverage and environment-driven configuration.
 

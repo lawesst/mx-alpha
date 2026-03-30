@@ -18,7 +18,13 @@ export type SwapPlanTransactionTemplate = {
   tokenTransfers?: Array<{
     token: string
     nonce?: number
-    amount: string
+    amount?: string
+    amountSource?: {
+      kind: 'previous-action-output'
+      actionIndex: number
+      outputToken: string
+      fallbackAmount: string
+    }
   }>
   arguments?: Array<
     | { type: 'TokenIdentifier'; value: string }
@@ -42,6 +48,13 @@ export type BuildSwapPlanTransactionsParameters = {
   minGasLimit?: bigint
   gasLimitPerByte?: bigint
   ignoreUnsupportedActions?: boolean
+  actionOutputs?: Record<
+    number,
+    {
+      token?: string
+      amount: string
+    }
+  >
 }
 
 export async function buildTransactionsFromSwapPlan(
@@ -105,13 +118,21 @@ export async function buildTransactionsFromSwapPlan(
       ...(template.tokenTransfers
         ? {
             tokenTransfers: template.tokenTransfers.map(
-              (transfer) =>
+              (transfer, transferIndex) =>
                 new TokenTransfer({
                   token: new Token({
                     identifier: transfer.token,
                     ...(transfer.nonce ? { nonce: BigInt(transfer.nonce) } : {}),
                   }),
-                  amount: BigInt(transfer.amount),
+                  amount: BigInt(
+                    resolveTemplateAmount({
+                      actionOutputs: parameters.actionOutputs,
+                      amount: transfer.amount,
+                      amountSource: transfer.amountSource,
+                      targetToken: transfer.token,
+                      location: `tokenTransfers[${transferIndex}]`,
+                    }),
+                  ),
                 }),
             ),
           }
@@ -122,4 +143,43 @@ export async function buildTransactionsFromSwapPlan(
   }
 
   return transactions
+}
+
+function resolveTemplateAmount(parameters: {
+  actionOutputs: BuildSwapPlanTransactionsParameters['actionOutputs'] | undefined
+  amount: string | undefined
+  amountSource:
+    | {
+        kind: 'previous-action-output'
+        actionIndex: number
+        outputToken: string
+        fallbackAmount: string
+      }
+    | undefined
+  targetToken: string
+  location: string
+}): string {
+  if (parameters.amount) {
+    return parameters.amount
+  }
+
+  if (!parameters.amountSource) {
+    throw new Error(`Missing amount for ${parameters.location}`)
+  }
+
+  const resolvedOutput = parameters.actionOutputs?.[parameters.amountSource.actionIndex]
+  if (resolvedOutput) {
+    if (
+      resolvedOutput.token &&
+      resolvedOutput.token !== parameters.amountSource.outputToken
+    ) {
+      throw new Error(
+        `Resolved output token mismatch for ${parameters.location}: expected ${parameters.amountSource.outputToken}, received ${resolvedOutput.token}`,
+      )
+    }
+
+    return resolvedOutput.amount
+  }
+
+  return parameters.amountSource.fallbackAmount
 }

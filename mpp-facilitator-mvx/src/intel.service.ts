@@ -79,6 +79,13 @@ type SwapSimulation = {
   generatedAt: string;
 };
 
+type ActionAmountReference = {
+  kind: 'previous-action-output';
+  actionIndex: number;
+  outputToken: string;
+  fallbackAmount: string;
+};
+
 @Injectable()
 export class IntelService {
   private readonly apiBaseUrl =
@@ -732,6 +739,7 @@ export class IntelService {
         tokenOut: this.mexBridgeAsset,
         amountIn: simulation.request.amount,
         amountInSmallestUnit: wrapAmountSmallestUnit,
+        outputAmountSmallestUnit: wrapAmountSmallestUnit,
         ...(wrapTemplate ? { transactionTemplate: wrapTemplate } : {}),
         note: 'Wrap EGLD to WEGLD before interacting with xExchange pair contracts.',
       });
@@ -796,6 +804,18 @@ export class IntelService {
               expectedAmountOut,
               Math.max(50, Math.floor(slippageBps / routePairs.length)),
             );
+      const actionInputAmountSmallestUnit =
+        estimatedIntermediateAmounts[index] !== undefined
+          ? this.decimalToBaseUnits(
+              estimatedIntermediateAmounts[index],
+              this.decimalsForToken(tokenIn, simulation),
+            )
+          : '0';
+      const minAmountOutSmallestUnit = this.decimalToBaseUnits(
+        minAmountOut,
+        this.decimalsForToken(tokenOut, simulation),
+      );
+      const amountReference = this.previousActionOutputReference(actions, tokenIn);
 
       actions.push({
         type: 'swap-fixed-input',
@@ -809,32 +829,22 @@ export class IntelService {
           (index === 0 ? simulation.request.amount : undefined),
         amountInSmallestUnit:
           estimatedIntermediateAmounts[index] !== undefined
-            ? this.decimalToBaseUnits(
-                estimatedIntermediateAmounts[index],
-                this.decimalsForToken(tokenIn, simulation),
-              )
+            ? actionInputAmountSmallestUnit
             : undefined,
         minAmountOut,
-        minAmountOutSmallestUnit: this.decimalToBaseUnits(
-          minAmountOut,
+        minAmountOutSmallestUnit,
+        estimatedOutputAmountSmallestUnit: this.decimalToBaseUnits(
+          expectedAmountOut,
           this.decimalsForToken(tokenOut, simulation),
         ),
         functionHint: 'swap-fixed-input',
         transactionTemplate: this.buildSwapFixedInputTemplate({
           pairAddress: pair.address,
           tokenIn,
-          tokenInAmountSmallestUnit:
-            estimatedIntermediateAmounts[index] !== undefined
-              ? this.decimalToBaseUnits(
-                  estimatedIntermediateAmounts[index],
-                  this.decimalsForToken(tokenIn, simulation),
-                )
-              : '0',
+          tokenInAmountSmallestUnit: actionInputAmountSmallestUnit,
           tokenOut,
-          minAmountOutSmallestUnit: this.decimalToBaseUnits(
-            minAmountOut,
-            this.decimalsForToken(tokenOut, simulation),
-          ),
+          minAmountOutSmallestUnit,
+          amountReference,
         }),
         note: 'Execute against the xExchange pair contract for this hop.',
       });
@@ -843,8 +853,13 @@ export class IntelService {
     });
 
     if (toAsset.identifier === 'EGLD' && currentToken === this.mexBridgeAsset) {
+      const amountReference = this.previousActionOutputReference(
+        actions,
+        this.mexBridgeAsset,
+      );
       const unwrapTemplate = this.buildUnwrapEgldTemplate({
         amountSmallestUnit: this.decimalToBaseUnits(minOutputHuman, 18),
+        amountReference,
       });
 
       actions.push({
@@ -853,6 +868,7 @@ export class IntelService {
         tokenOut: 'EGLD',
         minAmountOut: minOutputHuman,
         minAmountOutSmallestUnit: this.decimalToBaseUnits(minOutputHuman, 18),
+        ...(amountReference ? { amountReference } : {}),
         ...(unwrapTemplate ? { transactionTemplate: unwrapTemplate } : {}),
         note: unwrapTemplate
           ? 'Unwrap the guaranteed minimum WEGLD back to EGLD after the final pair swap.'
@@ -1118,6 +1134,7 @@ export class IntelService {
     tokenInAmountSmallestUnit: string;
     tokenOut: string;
     minAmountOutSmallestUnit: string;
+    amountReference?: ActionAmountReference;
   }) {
     return {
       kind: 'smart-contract-execute',
@@ -1129,7 +1146,9 @@ export class IntelService {
         {
           token: parameters.tokenIn,
           nonce: 0,
-          amount: parameters.tokenInAmountSmallestUnit,
+          ...(parameters.amountReference
+            ? { amountSource: parameters.amountReference }
+            : { amount: parameters.tokenInAmountSmallestUnit }),
         },
       ],
       arguments: [
@@ -1163,7 +1182,10 @@ export class IntelService {
     };
   }
 
-  private buildUnwrapEgldTemplate(parameters: { amountSmallestUnit: string }) {
+  private buildUnwrapEgldTemplate(parameters: {
+    amountSmallestUnit: string;
+    amountReference?: ActionAmountReference;
+  }) {
     const wegldSwapAddress = this.wegldSwapAddress();
     if (!wegldSwapAddress) {
       return undefined;
@@ -1179,10 +1201,47 @@ export class IntelService {
         {
           token: this.mexBridgeAsset,
           nonce: 0,
-          amount: parameters.amountSmallestUnit,
+          ...(parameters.amountReference
+            ? { amountSource: parameters.amountReference }
+            : { amount: parameters.amountSmallestUnit }),
         },
       ],
       arguments: [],
+    };
+  }
+
+  private previousActionOutputReference(
+    actions: Array<Record<string, unknown>>,
+    expectedToken: string,
+  ): ActionAmountReference | undefined {
+    const previousActionIndex = actions.length - 1;
+    if (previousActionIndex < 0) {
+      return undefined;
+    }
+
+    const previousAction = actions[previousActionIndex];
+    const previousTokenOut =
+      typeof previousAction.tokenOut === 'string' ? previousAction.tokenOut : undefined;
+    if (previousTokenOut !== expectedToken) {
+      return undefined;
+    }
+
+    const fallbackAmount =
+      typeof previousAction.minAmountOutSmallestUnit === 'string'
+        ? previousAction.minAmountOutSmallestUnit
+        : typeof previousAction.outputAmountSmallestUnit === 'string'
+          ? previousAction.outputAmountSmallestUnit
+          : undefined;
+
+    if (!fallbackAmount) {
+      return undefined;
+    }
+
+    return {
+      kind: 'previous-action-output',
+      actionIndex: previousActionIndex,
+      outputToken: expectedToken,
+      fallbackAmount,
     };
   }
 

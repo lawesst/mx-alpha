@@ -113,6 +113,8 @@ The `swap-sim` example now surfaces xExchange-aware route metadata when the faci
 
 For supported `swap-plan` actions, the client package also exports `buildTransactionsFromSwapPlan()` from [`mppx-multiversx/client`], which turns the facilitator's `transactionTemplate` objects into unsigned `Transaction` instances using `SmartContractTransactionsFactory`.
 
+Chained actions can now reference the previous action's output amount. If you do not provide runtime outputs, the builder falls back to the conservative amount embedded by the facilitator. If you do have real outputs from earlier steps, pass them through `actionOutputs` so later transactions are constructed with the exact received amount.
+
 ## Advanced Verification
 
 The SDK supports `MultiTransferESDT` and `MultiESDTNFTTransfer` verification. It parses the MultiversX `data` field to ensure that multi-token transfers match the expected payment requirements.

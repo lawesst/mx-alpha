@@ -224,6 +224,17 @@ describe('IntelService', () => {
         type: 'swap-fixed-input',
         pairId: 'EGLDRIDE-7bd51a',
         tokenOut: 'RIDE-7d18e9',
+        transactionTemplate: expect.objectContaining({
+          tokenTransfers: [
+            expect.objectContaining({
+              amountSource: expect.objectContaining({
+                kind: 'previous-action-output',
+                actionIndex: 0,
+                outputToken: 'WEGLD-bd4d79',
+              }),
+            }),
+          ],
+        }),
       }),
     );
     expect(report.executionPlan.chainId).toBe('D');
@@ -288,6 +299,24 @@ describe('IntelService', () => {
         }),
       }),
     );
+
+    expect(report.executionPlan.actions[1]).toEqual(
+      expect.objectContaining({
+        type: 'swap-fixed-input',
+        transactionTemplate: expect.objectContaining({
+          tokenTransfers: [
+            expect.objectContaining({
+              amountSource: expect.objectContaining({
+                kind: 'previous-action-output',
+                actionIndex: 0,
+                outputToken: 'WEGLD-bd4d79',
+                fallbackAmount: '2000000000000000000',
+              }),
+            }),
+          ],
+        }),
+      }),
+    );
   });
 
   it('adds an unwrap template for EGLD destinations when a WEGLD swap address is configured', async () => {
@@ -338,10 +367,24 @@ describe('IntelService', () => {
     expect(unwrapAction).toEqual(
       expect.objectContaining({
         type: 'unwrap-egld',
+        amountReference: expect.objectContaining({
+          kind: 'previous-action-output',
+          actionIndex: 0,
+          outputToken: 'WEGLD-bd4d79',
+        }),
         transactionTemplate: expect.objectContaining({
           receiver:
             'erd1qqqqqqqqqqqqqpgq4axqc749vuqr27snr8d8qgvlmz44chsr0n4sm4a72g',
           function: 'unwrapEgld',
+          tokenTransfers: [
+            expect.objectContaining({
+              amountSource: expect.objectContaining({
+                kind: 'previous-action-output',
+                actionIndex: 0,
+                outputToken: 'WEGLD-bd4d79',
+              }),
+            }),
+          ],
         }),
       }),
     );

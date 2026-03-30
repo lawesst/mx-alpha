@@ -85,4 +85,162 @@ describe('swap plan transaction construction', () => {
     expect(transaction.value).toBe(2000000000000000000n)
     expect(Buffer.from(transaction.data).toString()).toBe('wrapEgld')
   })
+
+  it('uses fallback previous-output amounts for chained swap actions', async () => {
+    const [, chainedTransaction] = await buildTransactionsFromSwapPlan({
+      sender: 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx',
+      plan: {
+        chainId: 'D',
+        actions: [
+          {
+            type: 'swap-fixed-input',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgqeel2kumf0r8ffyhth7pqdujjat9nx0862jpsg2pqaq',
+              gasLimit: '100000000',
+              function: 'swapTokensFixedInput',
+              tokenTransfers: [
+                {
+                  token: 'USDC-c76f1f',
+                  nonce: 0,
+                  amount: '25000000',
+                },
+              ],
+              arguments: [
+                {
+                  type: 'TokenIdentifier',
+                  value: 'WEGLD-bd4d79',
+                },
+                {
+                  type: 'BigUInt',
+                  value: '6456540000000000000',
+                },
+              ],
+            },
+          },
+          {
+            type: 'swap-fixed-input',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgqav09xenkuqsdyeyy5evqyhuusvu4gl3t2jpss57g8x',
+              gasLimit: '100000000',
+              function: 'swapTokensFixedInput',
+              tokenTransfers: [
+                {
+                  token: 'WEGLD-bd4d79',
+                  nonce: 0,
+                  amountSource: {
+                    kind: 'previous-action-output',
+                    actionIndex: 0,
+                    outputToken: 'WEGLD-bd4d79',
+                    fallbackAmount: '6000000000000000000',
+                  },
+                },
+              ],
+              arguments: [
+                {
+                  type: 'TokenIdentifier',
+                  value: 'RIDE-7d18e9',
+                },
+                {
+                  type: 'BigUInt',
+                  value: '1200000000000000000000',
+                },
+              ],
+            },
+          },
+        ],
+      },
+    })
+
+    expect(Buffer.from(chainedTransaction.data).toString()).toContain(
+      'ESDTTransfer@5745474c442d626434643739@53444835ec580000',
+    )
+  })
+
+  it('prefers resolved previous-output amounts when provided', async () => {
+    const [, chainedTransaction] = await buildTransactionsFromSwapPlan({
+      sender: 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx',
+      plan: {
+        chainId: 'D',
+        actions: [
+          {
+            type: 'swap-fixed-input',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgqeel2kumf0r8ffyhth7pqdujjat9nx0862jpsg2pqaq',
+              gasLimit: '100000000',
+              function: 'swapTokensFixedInput',
+              tokenTransfers: [
+                {
+                  token: 'USDC-c76f1f',
+                  nonce: 0,
+                  amount: '25000000',
+                },
+              ],
+              arguments: [
+                {
+                  type: 'TokenIdentifier',
+                  value: 'WEGLD-bd4d79',
+                },
+                {
+                  type: 'BigUInt',
+                  value: '6456540000000000000',
+                },
+              ],
+            },
+          },
+          {
+            type: 'swap-fixed-input',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgqav09xenkuqsdyeyy5evqyhuusvu4gl3t2jpss57g8x',
+              gasLimit: '100000000',
+              function: 'swapTokensFixedInput',
+              tokenTransfers: [
+                {
+                  token: 'WEGLD-bd4d79',
+                  nonce: 0,
+                  amountSource: {
+                    kind: 'previous-action-output',
+                    actionIndex: 0,
+                    outputToken: 'WEGLD-bd4d79',
+                    fallbackAmount: '6000000000000000000',
+                  },
+                },
+              ],
+              arguments: [
+                {
+                  type: 'TokenIdentifier',
+                  value: 'RIDE-7d18e9',
+                },
+                {
+                  type: 'BigUInt',
+                  value: '1200000000000000000000',
+                },
+              ],
+            },
+          },
+        ],
+      },
+      actionOutputs: {
+        0: {
+          token: 'WEGLD-bd4d79',
+          amount: '7000000000000000000',
+        },
+      },
+    })
+
+    expect(Buffer.from(chainedTransaction.data).toString()).toContain(
+      'ESDTTransfer@5745474c442d626434643739@6124fee993bc0000',
+    )
+  })
 })
