@@ -11,9 +11,14 @@ import {
 } from '@multiversx/sdk-core'
 import {
   SwapPlanExecutionError,
+  SwapPlanPolicyError,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
   multiversx,
+} from '../src/client/index.ts'
+import type {
+  SwapExecutionPlan,
+  SwapPlanExecutionPolicy,
 } from '../src/client/index.ts'
 
 type ExampleRequest =
@@ -36,6 +41,13 @@ Environment:
   MX_SETTLEMENT_TIMEOUT_MS  Optional tx settlement timeout in milliseconds (default: 60000)
   MX_POST_SETTLEMENT_DELAY_MS  Optional delay before retry after settlement (default: 3000)
   MX_EXECUTE_SWAP_PLAN  Set to "true" to sign and submit swap-plan actions after fetching the paid plan
+  MX_SWAP_MAX_ACTIONS  Optional policy guard for maximum action count (default when executing: 4)
+  MX_SWAP_ALLOWED_ACTION_TYPES  Optional comma-separated action allowlist
+  MX_SWAP_ALLOWED_RECEIVERS  Optional comma-separated contract receiver allowlist
+  MX_SWAP_ALLOWED_CHAIN_IDS  Optional comma-separated chain allowlist
+  MX_SWAP_ALLOWED_STRATEGIES  Optional comma-separated strategy allowlist (default when executing: xexchange-pair-sequence)
+  MX_SWAP_MAX_SLIPPAGE_BPS  Optional maximum allowed suggested slippage
+  MX_SWAP_MAX_DEADLINE_SECONDS  Optional maximum allowed suggested deadline
 
 Examples:
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- token-risk XMEX-abc123
@@ -102,6 +114,7 @@ async function main(): Promise<void> {
 
   const receipt = response.headers.get('payment-receipt')
   const payload = (await response.json()) as Record<string, unknown>
+  const executionPolicy = request.kind === 'swap-plan' ? buildSwapExecutionPolicy() : undefined
   const unsignedTransactions =
     request.kind === 'swap-plan'
       ? await buildUnsignedSwapPlanTransactions(sender, payload)
@@ -111,6 +124,7 @@ async function main(): Promise<void> {
       ? await executePaidSwapPlan({
           account,
           payload,
+          executionPolicy,
         })
       : undefined
   const executionError =
@@ -118,6 +132,12 @@ async function main(): Promise<void> {
     process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
     execution instanceof SwapPlanExecutionError
       ? serializeSwapPlanExecutionError(execution)
+      : undefined
+  const executionPolicyError =
+    request.kind === 'swap-plan' &&
+    process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
+    execution instanceof SwapPlanPolicyError
+      ? serializeSwapPlanPolicyError(execution)
       : undefined
 
   console.log(
@@ -129,16 +149,18 @@ async function main(): Promise<void> {
         payload,
         ...(unsignedTransactions ? { unsignedTransactions } : {}),
         ...(execution && !(execution instanceof SwapPlanExecutionError)
+          && !(execution instanceof SwapPlanPolicyError)
           ? { execution }
           : {}),
         ...(executionError ? { executionError } : {}),
+        ...(executionPolicyError ? { executionPolicyError } : {}),
       },
       null,
       2,
     ),
   )
 
-  if (executionError) {
+  if (executionError || executionPolicyError) {
     process.exitCode = 1
   }
 }
@@ -326,48 +348,14 @@ async function buildUnsignedSwapPlanTransactions(
   sender: string,
   payload: Record<string, unknown>,
 ) {
-  const executionPlan = payload.executionPlan as
-    | {
-        chainId?: string
-        actions?: Array<{
-          type: string
-          transactionTemplate?: {
-            kind: 'smart-contract-execute'
-            chainId: string
-            receiver: string
-            gasLimit: string
-            function: string
-            nativeTransferAmount?: string
-            tokenTransfers?: Array<{
-              token: string
-              nonce?: number
-              amount?: string
-              amountSource?: {
-                kind: 'previous-action-output'
-                actionIndex: number
-                outputToken: string
-                fallbackAmount: string
-              }
-            }>
-            arguments?: Array<
-              | { type: 'TokenIdentifier'; value: string }
-              | { type: 'BigUInt'; value: string }
-            >
-          }
-        }>
-      }
-    | undefined
-
+  const executionPlan = extractExecutionPlan(payload)
   if (!executionPlan?.actions) {
     return undefined
   }
 
   const transactions = await buildTransactionsFromSwapPlan({
     sender,
-    plan: {
-      chainId: executionPlan.chainId,
-      actions: executionPlan.actions,
-    },
+    plan: executionPlan,
     ignoreUnsupportedActions: true,
   })
 
@@ -382,41 +370,14 @@ async function buildUnsignedSwapPlanTransactions(
 async function executePaidSwapPlan(options: {
   account: Account
   payload: Record<string, unknown>
-}): Promise<ReturnType<typeof serializeExecutionResult> | SwapPlanExecutionError | undefined> {
-  const executionPlan = options.payload.executionPlan as
-    | {
-        chainId?: string
-        actions?: Array<{
-          type: string
-          tokenIn?: string
-          tokenOut?: string
-          transactionTemplate?: {
-            kind: 'smart-contract-execute'
-            chainId: string
-            receiver: string
-            gasLimit: string
-            function: string
-            nativeTransferAmount?: string
-            tokenTransfers?: Array<{
-              token: string
-              nonce?: number
-              amount?: string
-              amountSource?: {
-                kind: 'previous-action-output'
-                actionIndex: number
-                outputToken: string
-                fallbackAmount: string
-              }
-            }>
-            arguments?: Array<
-              | { type: 'TokenIdentifier'; value: string }
-              | { type: 'BigUInt'; value: string }
-            >
-          }
-        }>
-      }
-    | undefined
-
+  executionPolicy?: SwapPlanExecutionPolicy
+}): Promise<
+  | ReturnType<typeof serializeExecutionResult>
+  | SwapPlanExecutionError
+  | SwapPlanPolicyError
+  | undefined
+> {
+  const executionPlan = extractExecutionPlan(options.payload)
   if (!executionPlan?.actions) {
     return undefined
   }
@@ -428,11 +389,9 @@ async function executePaidSwapPlan(options: {
     const result = await executeSwapPlan({
       signer: options.account,
       provider,
-      plan: {
-        chainId: executionPlan.chainId,
-        actions: executionPlan.actions,
-      },
+      plan: executionPlan,
       ignoreUnsupportedActions: true,
+      ...(options.executionPolicy ? { executionPolicy: options.executionPolicy } : {}),
     })
 
     return serializeExecutionResult(result)
@@ -441,7 +400,80 @@ async function executePaidSwapPlan(options: {
       return error
     }
 
+    if (error instanceof SwapPlanPolicyError) {
+      return error
+    }
+
     throw error
+  }
+}
+
+function extractExecutionPlan(payload: Record<string, unknown>): SwapExecutionPlan | undefined {
+  const executionPlan = payload.executionPlan
+
+  if (!executionPlan || typeof executionPlan !== 'object') {
+    return undefined
+  }
+
+  const candidate = executionPlan as SwapExecutionPlan
+  if (!Array.isArray(candidate.actions)) {
+    return undefined
+  }
+
+  return candidate
+}
+
+function buildSwapExecutionPolicy(): SwapPlanExecutionPolicy | undefined {
+  const isExecuting = process.env.MX_EXECUTE_SWAP_PLAN === 'true'
+  const maxActionCount = parseOptionalInteger(process.env.MX_SWAP_MAX_ACTIONS)
+  const allowedActionTypes = parseCsvEnv(process.env.MX_SWAP_ALLOWED_ACTION_TYPES)
+  const allowedReceivers = parseCsvEnv(process.env.MX_SWAP_ALLOWED_RECEIVERS)
+  const allowedChainIds = parseCsvEnv(process.env.MX_SWAP_ALLOWED_CHAIN_IDS)
+  const allowedStrategies = parseCsvEnv(process.env.MX_SWAP_ALLOWED_STRATEGIES)
+  const maxSuggestedSlippageBps = parseOptionalInteger(
+    process.env.MX_SWAP_MAX_SLIPPAGE_BPS,
+  )
+  const maxSuggestedDeadlineSeconds = parseOptionalInteger(
+    process.env.MX_SWAP_MAX_DEADLINE_SECONDS,
+  )
+
+  if (
+    !isExecuting &&
+    maxActionCount === undefined &&
+    !allowedActionTypes &&
+    !allowedReceivers &&
+    !allowedChainIds &&
+    !allowedStrategies &&
+    maxSuggestedSlippageBps === undefined &&
+    maxSuggestedDeadlineSeconds === undefined
+  ) {
+    return undefined
+  }
+
+  return {
+    ...(maxActionCount !== undefined
+      ? { maxActionCount }
+      : isExecuting
+        ? { maxActionCount: 4 }
+        : {}),
+    ...(allowedActionTypes
+      ? { allowedActionTypes }
+      : isExecuting
+        ? { allowedActionTypes: ['wrap-egld', 'swap-fixed-input', 'unwrap-egld'] }
+        : {}),
+    ...(allowedReceivers ? { allowedReceivers } : {}),
+    ...(allowedChainIds ? { allowedChainIds } : {}),
+    ...(allowedStrategies
+      ? { allowedStrategies }
+      : isExecuting
+        ? { allowedStrategies: ['xexchange-pair-sequence'] }
+        : {}),
+    ...(maxSuggestedSlippageBps !== undefined
+      ? { maxSuggestedSlippageBps }
+      : {}),
+    ...(maxSuggestedDeadlineSeconds !== undefined
+      ? { maxSuggestedDeadlineSeconds }
+      : {}),
   }
 }
 
@@ -536,4 +568,45 @@ function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
       executions: error.executions,
     }).executions,
   }
+}
+
+function serializeSwapPlanPolicyError(error: SwapPlanPolicyError) {
+  return {
+    message: error.message,
+    violations: error.violations,
+    policy: error.policy,
+    planSummary: {
+      chainId: error.plan.chainId,
+      strategy: error.plan.strategy,
+      slippageBpsSuggested: error.plan.slippageBpsSuggested,
+      deadlineSecondsSuggested: error.plan.deadlineSecondsSuggested,
+      actionCount: error.plan.actions.length,
+    },
+  }
+}
+
+function parseCsvEnv(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  const parsed = value
+    .split(',')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+
+  return parsed.length > 0 ? parsed : undefined
+}
+
+function parseOptionalInteger(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Expected an integer environment value but received "${value}"`)
+  }
+
+  return parsed
 }

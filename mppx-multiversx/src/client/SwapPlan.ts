@@ -46,7 +46,21 @@ export type SwapPlanAction = {
 
 export type SwapExecutionPlan = {
   chainId?: string
+  strategy?: string
+  slippageBpsSuggested?: number
+  deadlineSecondsSuggested?: number
+  warnings?: string[]
   actions: SwapPlanAction[]
+}
+
+export type SwapPlanExecutionPolicy = {
+  maxActionCount?: number
+  allowedActionTypes?: string[]
+  allowedReceivers?: string[]
+  allowedChainIds?: string[]
+  allowedStrategies?: string[]
+  maxSuggestedSlippageBps?: number
+  maxSuggestedDeadlineSeconds?: number
 }
 
 export type BuildSwapPlanTransactionsParameters = {
@@ -55,6 +69,7 @@ export type BuildSwapPlanTransactionsParameters = {
   minGasLimit?: bigint
   gasLimitPerByte?: bigint
   ignoreUnsupportedActions?: boolean
+  executionPolicy?: SwapPlanExecutionPolicy
   actionOutputs?: Record<
     number,
     {
@@ -66,7 +81,7 @@ export type BuildSwapPlanTransactionsParameters = {
 
 export type BuildSwapPlanActionTransactionParameters = Omit<
   BuildSwapPlanTransactionsParameters,
-  'plan'
+  'plan' | 'executionPolicy'
 > & {
   action: SwapPlanAction
   actionIndex: number
@@ -130,9 +145,142 @@ export class SwapPlanExecutionError extends Error {
   }
 }
 
+export class SwapPlanPolicyError extends Error {
+  readonly violations: string[]
+  readonly policy: SwapPlanExecutionPolicy
+  readonly plan: SwapExecutionPlan
+
+  constructor(parameters: {
+    violations: string[]
+    policy: SwapPlanExecutionPolicy
+    plan: SwapExecutionPlan
+  }) {
+    super(`Swap execution policy rejected the plan: ${parameters.violations.join('; ')}`)
+    this.name = 'SwapPlanPolicyError'
+    this.violations = parameters.violations
+    this.policy = parameters.policy
+    this.plan = parameters.plan
+  }
+}
+
+export function validateSwapExecutionPlan(parameters: {
+  plan: SwapExecutionPlan
+  policy: SwapPlanExecutionPolicy
+  ignoreUnsupportedActions?: boolean
+}): void {
+  const { plan, policy } = parameters
+  const violations: string[] = []
+
+  if (
+    policy.maxActionCount !== undefined &&
+    plan.actions.length > policy.maxActionCount
+  ) {
+    violations.push(
+      `Plan contains ${plan.actions.length} actions, which exceeds the policy maximum of ${policy.maxActionCount}`,
+    )
+  }
+
+  if (policy.allowedStrategies) {
+    if (!plan.strategy) {
+      violations.push('Plan strategy is missing but the policy requires an allowed strategy')
+    } else if (!policy.allowedStrategies.includes(plan.strategy)) {
+      violations.push(
+        `Plan strategy "${plan.strategy}" is not in the allowed strategy list (${policy.allowedStrategies.join(', ')})`,
+      )
+    }
+  }
+
+  if (policy.allowedChainIds) {
+    if (!plan.chainId) {
+      violations.push('Plan chainId is missing but the policy requires an allowed chain')
+    } else if (!policy.allowedChainIds.includes(plan.chainId)) {
+      violations.push(
+        `Plan chainId "${plan.chainId}" is not in the allowed chain list (${policy.allowedChainIds.join(', ')})`,
+      )
+    }
+  }
+
+  if (policy.maxSuggestedSlippageBps !== undefined) {
+    if (plan.slippageBpsSuggested === undefined) {
+      violations.push(
+        'Plan slippageBpsSuggested is missing but the policy requires a maximum suggested slippage',
+      )
+    } else if (plan.slippageBpsSuggested > policy.maxSuggestedSlippageBps) {
+      violations.push(
+        `Plan suggested slippage ${plan.slippageBpsSuggested}bps exceeds the policy maximum of ${policy.maxSuggestedSlippageBps}bps`,
+      )
+    }
+  }
+
+  if (policy.maxSuggestedDeadlineSeconds !== undefined) {
+    if (plan.deadlineSecondsSuggested === undefined) {
+      violations.push(
+        'Plan deadlineSecondsSuggested is missing but the policy requires a maximum suggested deadline',
+      )
+    } else if (plan.deadlineSecondsSuggested > policy.maxSuggestedDeadlineSeconds) {
+      violations.push(
+        `Plan suggested deadline ${plan.deadlineSecondsSuggested}s exceeds the policy maximum of ${policy.maxSuggestedDeadlineSeconds}s`,
+      )
+    }
+  }
+
+  const allowedReceivers = policy.allowedReceivers?.map((receiver) =>
+    receiver.toLowerCase(),
+  )
+
+  plan.actions.forEach((action, index) => {
+    if (
+      policy.allowedActionTypes &&
+      !policy.allowedActionTypes.includes(action.type)
+    ) {
+      violations.push(
+        `Action ${index} has type "${action.type}", which is not in the allowed action type list (${policy.allowedActionTypes.join(', ')})`,
+      )
+    }
+
+    if (!allowedReceivers) {
+      return
+    }
+
+    const receiver = action.transactionTemplate?.receiver
+    if (!receiver) {
+      if (!parameters.ignoreUnsupportedActions) {
+        violations.push(
+          `Action ${index} (${action.type}) is missing a transaction template receiver required by the policy allowlist`,
+        )
+      }
+      return
+    }
+
+    if (!allowedReceivers.includes(receiver.toLowerCase())) {
+      violations.push(
+        `Action ${index} (${action.type}) targets receiver "${receiver}", which is not in the allowed receiver list`,
+      )
+    }
+  })
+
+  if (violations.length > 0) {
+    throw new SwapPlanPolicyError({
+      violations,
+      policy,
+      plan,
+    })
+  }
+}
+
 export async function buildTransactionsFromSwapPlan(
   parameters: BuildSwapPlanTransactionsParameters,
 ): Promise<Transaction[]> {
+  if (parameters.executionPolicy) {
+    validateSwapExecutionPlan({
+      plan: parameters.plan,
+      policy: parameters.executionPolicy,
+      ...(parameters.ignoreUnsupportedActions !== undefined
+        ? { ignoreUnsupportedActions: parameters.ignoreUnsupportedActions }
+        : {}),
+    })
+  }
+
   const sender =
     typeof parameters.sender === 'string'
       ? Address.newFromBech32(parameters.sender)
@@ -242,6 +390,16 @@ export async function buildTransactionFromSwapPlanAction(
 export async function executeSwapPlan(
   parameters: ExecuteSwapPlanParameters,
 ): Promise<ExecuteSwapPlanResult> {
+  if (parameters.executionPolicy) {
+    validateSwapExecutionPlan({
+      plan: parameters.plan,
+      policy: parameters.executionPolicy,
+      ...(parameters.ignoreUnsupportedActions !== undefined
+        ? { ignoreUnsupportedActions: parameters.ignoreUnsupportedActions }
+        : {}),
+    })
+  }
+
   const actionOutputs = { ...(parameters.actionOutputs || {}) }
   const executions: ExecutedSwapPlanAction[] = []
   const sender = parameters.signer.address

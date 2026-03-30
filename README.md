@@ -26,6 +26,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Client-side transaction construction into unsigned MultiversX transactions
 - Step-by-step client-side execution that can reuse actual prior-step outputs at runtime
 - Structured failure reporting for partially executed swap plans
+- Pre-broadcast execution policy guards for strategy, action count, contract allowlists, and suggested slippage/deadline checks
 
 ## What The Product Does
 
@@ -97,5 +98,6 @@ npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 - downstream swap hops and final unwrap actions can reference the previous action's output, so clients can either use safe fallback amounts or inject actual outputs at runtime.
 - the SDK can now execute supported swap-plan actions sequentially and reuse the actual completed output of each step when constructing the next one.
 - failed on-chain steps now raise a structured execution error that preserves partial progress and per-step status for debugging or recovery flows.
+- the SDK can also reject risky or unexpected plans before signing by enforcing an execution policy over strategy, receivers, action types, and suggested route limits.
 - unwrap templates are built from the guaranteed minimum output, so clients may still want to adjust the final unwrap amount after execution if more WEGLD is received.
 - This repo is intended as a buildable prototype rather than a polished production release.

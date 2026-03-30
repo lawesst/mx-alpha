@@ -2,6 +2,7 @@ import { Address, TransactionOnNetwork, TransactionStatus } from '@multiversx/sd
 import { describe, expect, it } from 'vitest'
 import {
   SwapPlanExecutionError,
+  SwapPlanPolicyError,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
 } from './SwapPlan.js'
@@ -249,6 +250,86 @@ describe('swap plan transaction construction', () => {
     )
   })
 
+  it('rejects plans that violate execution policy metadata guards', async () => {
+    await expect(
+      buildTransactionsFromSwapPlan({
+        sender: 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx',
+        plan: {
+          chainId: 'D',
+          strategy: 'advisory-only',
+          slippageBpsSuggested: 1800,
+          deadlineSecondsSuggested: 1200,
+          actions: [
+            {
+              type: 'swap-fixed-input',
+              transactionTemplate: {
+                kind: 'smart-contract-execute',
+                chainId: 'D',
+                receiver:
+                  'erd1qqqqqqqqqqqqqpgqeel2kumf0r8ffyhth7pqdujjat9nx0862jpsg2pqaq',
+                gasLimit: '100000000',
+                function: 'swapTokensFixedInput',
+                tokenTransfers: [
+                  {
+                    token: 'USDC-c76f1f',
+                    nonce: 0,
+                    amount: '25000000',
+                  },
+                ],
+                arguments: [
+                  {
+                    type: 'TokenIdentifier',
+                    value: 'WEGLD-bd4d79',
+                  },
+                  {
+                    type: 'BigUInt',
+                    value: '6456540000000000000',
+                  },
+                ],
+              },
+            },
+            {
+              type: 'unwrap-egld',
+              tokenOut: 'EGLD',
+              transactionTemplate: {
+                kind: 'smart-contract-execute',
+                chainId: 'D',
+                receiver:
+                  'erd1qqqqqqqqqqqqqpgq4axqc749vuqr27snr8d8qgvlmz44chsr0n4sm4a72g',
+                gasLimit: '10000000',
+                function: 'unwrapEgld',
+                tokenTransfers: [
+                  {
+                    token: 'WEGLD-bd4d79',
+                    nonce: 0,
+                    amount: '2000000000000000000',
+                  },
+                ],
+                arguments: [],
+              },
+            },
+          ],
+        },
+        executionPolicy: {
+          maxActionCount: 1,
+          allowedStrategies: ['xexchange-pair-sequence'],
+          allowedActionTypes: ['wrap-egld', 'swap-fixed-input'],
+          maxSuggestedSlippageBps: 1500,
+          maxSuggestedDeadlineSeconds: 900,
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'SwapPlanPolicyError',
+      violations: expect.arrayContaining([
+        expect.stringContaining('exceeds the policy maximum of 1'),
+        expect.stringContaining('strategy "advisory-only"'),
+        expect.stringContaining('slippage 1800bps'),
+        expect.stringContaining('deadline 1200s'),
+        expect.stringContaining('type "unwrap-egld"'),
+      ]),
+    })
+  })
+
   it('executes swap-plan actions sequentially and feeds actual outputs into later actions', async () => {
     const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
     const signerAddress = Address.newFromBech32(sender)
@@ -363,6 +444,90 @@ describe('swap plan transaction construction', () => {
     expect(result.executions).toHaveLength(2)
     expect(result.executions[0].status).toBe('success')
     expect(result.executions[1].status).toBe('success')
+  })
+
+  it('rejects disallowed receivers before broadcasting any transaction', async () => {
+    const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
+    const signerAddress = Address.newFromBech32(sender)
+    const sentTransactions: string[] = []
+
+    try {
+      await executeSwapPlan({
+        signer: {
+          address: signerAddress,
+          sign: async () => new Uint8Array(),
+          signTransaction: async () => new Uint8Array([1, 2, 3]),
+          verifyTransactionSignature: async () => true,
+          signMessage: async () => new Uint8Array(),
+          verifyMessageSignature: async () => true,
+        },
+        provider: {
+          getAccount: async () => ({ nonce: 5n }),
+          sendTransaction: async (transaction) => {
+            sentTransactions.push(Buffer.from(transaction.data).toString())
+            return `tx-${sentTransactions.length}`
+          },
+          getTransaction: async (txHash) =>
+            new TransactionOnNetwork({
+              hash: txHash,
+              status: new TransactionStatus('success'),
+              smartContractResults: [],
+            }),
+        },
+        plan: {
+          chainId: 'D',
+          strategy: 'xexchange-pair-sequence',
+          actions: [
+            {
+              type: 'swap-fixed-input',
+              tokenOut: 'WEGLD-bd4d79',
+              transactionTemplate: {
+                kind: 'smart-contract-execute',
+                chainId: 'D',
+                receiver:
+                  'erd1qqqqqqqqqqqqqpgqeel2kumf0r8ffyhth7pqdujjat9nx0862jpsg2pqaq',
+                gasLimit: '100000000',
+                function: 'swapTokensFixedInput',
+                tokenTransfers: [
+                  {
+                    token: 'USDC-c76f1f',
+                    nonce: 0,
+                    amount: '25000000',
+                  },
+                ],
+                arguments: [
+                  {
+                    type: 'TokenIdentifier',
+                    value: 'WEGLD-bd4d79',
+                  },
+                  {
+                    type: 'BigUInt',
+                    value: '6456540000000000000',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        executionPolicy: {
+          allowedStrategies: ['xexchange-pair-sequence'],
+          allowedReceivers: [
+            'erd1qqqqqqqqqqqqqpgqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqf4la8',
+          ],
+        },
+      })
+    } catch (error) {
+      expect(error).toBeInstanceOf(SwapPlanPolicyError)
+      expect(error).toMatchObject({
+        violations: [
+          expect.stringContaining('not in the allowed receiver list'),
+        ],
+      })
+      expect(sentTransactions).toHaveLength(0)
+      return
+    }
+
+    throw new Error('Expected executeSwapPlan() to throw a SwapPlanPolicyError')
   })
 
   it('falls back to embedded amounts when execution outputs are unavailable', async () => {
