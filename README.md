@@ -1,6 +1,14 @@
 # mx-alpha
 
-Paid MultiversX intelligence for AI agents using the Machine Payments Protocol (MPP).
+`mx-alpha` is a reference implementation for paid AI-agent tooling on MultiversX.
+
+It shows how an agent can:
+
+- discover a paid HTTP endpoint
+- receive a `402 Payment Required` challenge
+- pay that challenge on MultiversX using MPP
+- retry with proof of payment
+- receive premium JSON intelligence or an execution-ready swap plan
 
 This repo packages the working prototype we built on top of the MultiversX blog repos:
 
@@ -14,6 +22,17 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Execution planning for fixed-input swaps
 - Transaction templates in `swap-plan`
 - Client-side transaction construction into unsigned MultiversX transactions
+
+## What The Product Does
+
+The facilitator exposes paid endpoints for:
+
+- token due diligence with `token-risk`
+- wallet behavior summaries with `wallet-profile`
+- route estimation with `swap-sim`
+- execution planning with `swap-plan`
+
+The SDK and example client show how an agent can pay for those endpoints and turn the returned swap actions into unsigned MultiversX transactions.
 
 ## Repo Layout
 
