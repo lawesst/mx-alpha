@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  channelId          String   @id
+  employer           String
+  receiver           String
+  tokenId            String
+  amountLocked       String
+  amountSettled      String   @default("0")
+  lastVoucherAmount  String   @default("0")
+  lastVoucherNonce   BigInt   @default(0)
+  lastVoucherSignature String?
+  status             String   @default("OPEN")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model SettlementRecord {
+  id        String    @id
+  receiver  String?
+  amount    String?
+  currency  String?
+  chainId   String?
+  payer     String?
+  status    String    @default("pending")
+  txHash    String?
+  expiresAt DateTime?
+  opaque    String?
+  digest    String?
+  source    String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}

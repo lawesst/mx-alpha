@@ -1,0 +1,45 @@
+{
+  "name": "mppx-multiversx",
+  "version": "1.0.0",
+  "description": "MPP MultiversX SDK - Spec-compliant Mobile Payment Protocol integration for MultiversX",
+  "author": "MultiversX",
+  "license": "MIT",
+  "main": "index.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "require": "./dist/client/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "example:paid-intel": "tsx examples/paid-intel.ts"
+  },
+  "dependencies": {
+    "@multiversx/sdk-core": "^15.4.0",
+    "@multiversx/sdk-network-providers": "^2.9.3",
+    "@multiversx/sdk-wallet": "^4.6.0",
+    "mppx": "^0.4.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}
