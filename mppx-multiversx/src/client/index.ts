@@ -5,5 +5,11 @@ export {
   buildTransactionFromSwapPlanAction,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
+  SwapPlanExecutionError,
+} from './SwapPlan.js'
+export type {
+  ExecutedSwapPlanAction,
+  ExecuteSwapPlanResult,
+  SwapPlanActionOutput,
 } from './SwapPlan.js'
 export { multiversx } from './Methods.js'

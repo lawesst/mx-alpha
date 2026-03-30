@@ -94,7 +94,40 @@ export type ExecutedSwapPlanAction = {
   txHash: string
   transaction: Transaction
   completedTransaction: TransactionOnNetwork
+  status: string
   output?: SwapPlanActionOutput
+  failureReason?: string
+}
+
+export type ExecuteSwapPlanResult = {
+  actionOutputs: NonNullable<BuildSwapPlanTransactionsParameters['actionOutputs']>
+  executions: ExecutedSwapPlanAction[]
+}
+
+export class SwapPlanExecutionError extends Error {
+  readonly actionOutputs: ExecuteSwapPlanResult['actionOutputs']
+  readonly executions: ExecutedSwapPlanAction[]
+  readonly failedExecution: ExecutedSwapPlanAction
+
+  constructor(parameters: {
+    actionOutputs: ExecuteSwapPlanResult['actionOutputs']
+    executions: ExecutedSwapPlanAction[]
+    failedExecution: ExecutedSwapPlanAction
+  }) {
+    const status = parameters.failedExecution.status
+    const failureReason = parameters.failedExecution.failureReason
+
+    super(
+      failureReason
+        ? `Swap plan action ${parameters.failedExecution.actionIndex} (${parameters.failedExecution.actionType}) failed with status ${status}: ${failureReason}`
+        : `Swap plan action ${parameters.failedExecution.actionIndex} (${parameters.failedExecution.actionType}) failed with status ${status}`,
+    )
+
+    this.name = 'SwapPlanExecutionError'
+    this.actionOutputs = parameters.actionOutputs
+    this.executions = parameters.executions
+    this.failedExecution = parameters.failedExecution
+  }
 }
 
 export async function buildTransactionsFromSwapPlan(
@@ -208,10 +241,7 @@ export async function buildTransactionFromSwapPlanAction(
 
 export async function executeSwapPlan(
   parameters: ExecuteSwapPlanParameters,
-): Promise<{
-  actionOutputs: NonNullable<BuildSwapPlanTransactionsParameters['actionOutputs']>
-  executions: ExecutedSwapPlanAction[]
-}> {
+): Promise<ExecuteSwapPlanResult> {
   const actionOutputs = { ...(parameters.actionOutputs || {}) }
   const executions: ExecutedSwapPlanAction[] = []
   const sender = parameters.signer.address
@@ -255,6 +285,29 @@ export async function executeSwapPlan(
         : {}),
     }
     const completedTransaction = await waitForCompletedTransaction(waitParameters)
+    const status = completedTransaction.status.toString()
+    const failureReason = extractTransactionFailureReason(completedTransaction)
+
+    if (!completedTransaction.status.isSuccessful()) {
+      const failedExecution: ExecutedSwapPlanAction = {
+        actionIndex,
+        actionType: action.type,
+        txHash,
+        transaction,
+        completedTransaction,
+        status,
+        ...(failureReason ? { failureReason } : {}),
+      }
+
+      executions.push(failedExecution)
+
+      throw new SwapPlanExecutionError({
+        actionOutputs,
+        executions: [...executions],
+        failedExecution,
+      })
+    }
+
     const output = extractActionOutput({
       action,
       sender,
@@ -271,6 +324,7 @@ export async function executeSwapPlan(
       txHash,
       transaction,
       completedTransaction,
+      status,
       ...(output ? { output } : {}),
     })
 
@@ -341,6 +395,40 @@ async function waitForCompletedTransaction(parameters: {
   }
 
   throw new Error(`Timed out waiting for transaction ${parameters.txHash} to complete`)
+}
+
+function extractTransactionFailureReason(
+  transaction: TransactionOnNetwork,
+): string | undefined {
+  const raw = transaction.raw as Record<string, unknown> | undefined
+  const directReason = [
+    raw?.reason,
+    raw?.returnMessage,
+    raw?.error,
+    raw?.failReason,
+    raw?.message,
+  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+
+  if (directReason) {
+    return directReason
+  }
+
+  const signalErrorEvent = transaction.logs?.findFirstOrNoneEvent?.('signalError')
+  if (signalErrorEvent) {
+    const segments = [signalErrorEvent.data, ...signalErrorEvent.additionalData]
+      .map((value) => decodeUtf8(value))
+      .filter((value) => value.length > 0)
+
+    if (segments.length > 0) {
+      return segments.join(' | ')
+    }
+  }
+
+  if (!transaction.status.isSuccessful()) {
+    return transaction.status.toString()
+  }
+
+  return undefined
 }
 
 function extractActionOutput(parameters: {
@@ -433,4 +521,12 @@ function parseEsdtTransferData(data: string): SwapPlanActionOutput | undefined {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function decodeUtf8(value: Uint8Array | undefined): string {
+  if (!value || value.length === 0) {
+    return ''
+  }
+
+  return Buffer.from(value).toString('utf8').replace(/\0/g, '').trim()
 }

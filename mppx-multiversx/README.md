@@ -117,6 +117,8 @@ Chained actions can now reference the previous action's output amount. If you do
 
 The client package also exports `executeSwapPlan()`, which signs, submits, and waits for supported actions step by step. It captures the actual output of each completed action from smart-contract results and feeds that amount into later actions automatically when the plan uses previous-output references.
 
+If any on-chain step completes with a failed status, `executeSwapPlan()` now throws `SwapPlanExecutionError`. The error includes the failed execution plus all prior successful steps and resolved outputs, so callers can log or recover from partial execution state cleanly.
+
 To try that flow in the example client, set `MX_EXECUTE_SWAP_PLAN=true`:
 
 ```bash

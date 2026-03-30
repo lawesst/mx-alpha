@@ -10,6 +10,7 @@ import {
   TransferTransactionsFactory,
 } from '@multiversx/sdk-core'
 import {
+  SwapPlanExecutionError,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
   multiversx,
@@ -112,6 +113,12 @@ async function main(): Promise<void> {
           payload,
         })
       : undefined
+  const executionError =
+    request.kind === 'swap-plan' &&
+    process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
+    execution instanceof SwapPlanExecutionError
+      ? serializeSwapPlanExecutionError(execution)
+      : undefined
 
   console.log(
     JSON.stringify(
@@ -121,12 +128,19 @@ async function main(): Promise<void> {
         txHash,
         payload,
         ...(unsignedTransactions ? { unsignedTransactions } : {}),
-        ...(execution ? { execution } : {}),
+        ...(execution && !(execution instanceof SwapPlanExecutionError)
+          ? { execution }
+          : {}),
+        ...(executionError ? { executionError } : {}),
       },
       null,
       2,
     ),
   )
+
+  if (executionError) {
+    process.exitCode = 1
+  }
 }
 
 function parseRequest(args: string[]): ExampleRequest {
@@ -368,7 +382,7 @@ async function buildUnsignedSwapPlanTransactions(
 async function executePaidSwapPlan(options: {
   account: Account
   payload: Record<string, unknown>
-}) {
+}): Promise<ReturnType<typeof serializeExecutionResult> | SwapPlanExecutionError | undefined> {
   const executionPlan = options.payload.executionPlan as
     | {
         chainId?: string
@@ -410,28 +424,24 @@ async function executePaidSwapPlan(options: {
   const provider = new ApiNetworkProvider(resolveApiUrl(executionPlan.chainId), {
     clientName: 'mppx-multiversx-example',
   })
-  const result = await executeSwapPlan({
-    signer: options.account,
-    provider,
-    plan: {
-      chainId: executionPlan.chainId,
-      actions: executionPlan.actions,
-    },
-    ignoreUnsupportedActions: true,
-  })
+  try {
+    const result = await executeSwapPlan({
+      signer: options.account,
+      provider,
+      plan: {
+        chainId: executionPlan.chainId,
+        actions: executionPlan.actions,
+      },
+      ignoreUnsupportedActions: true,
+    })
 
-  return {
-    actionOutputs: result.actionOutputs,
-    executions: result.executions.map((execution) => ({
-      actionIndex: execution.actionIndex,
-      actionType: execution.actionType,
-      txHash: execution.txHash,
-      output: execution.output,
-      receiver: execution.transaction.receiver.toBech32(),
-      gasLimit: execution.transaction.gasLimit.toString(),
-      value: execution.transaction.value.toString(),
-      data: Buffer.from(execution.transaction.data).toString(),
-    })),
+    return serializeExecutionResult(result)
+  } catch (error) {
+    if (error instanceof SwapPlanExecutionError) {
+      return error
+    }
+
+    throw error
   }
 }
 
@@ -468,3 +478,62 @@ main().catch((error: unknown) => {
   console.error(message)
   process.exitCode = 1
 })
+
+function serializeExecutionResult(result: {
+  actionOutputs: Record<number, { token?: string; amount: string }>
+  executions: Array<{
+    actionIndex: number
+    actionType: string
+    txHash: string
+    status: string
+    output?: { token?: string; amount: string }
+    failureReason?: string
+    transaction: {
+      receiver: Address
+      gasLimit: bigint
+      value: bigint
+      data: Uint8Array | Buffer
+    }
+  }>
+}) {
+  return {
+    actionOutputs: result.actionOutputs,
+    executions: result.executions.map((execution) => ({
+      actionIndex: execution.actionIndex,
+      actionType: execution.actionType,
+      txHash: execution.txHash,
+      status: execution.status,
+      ...(execution.output ? { output: execution.output } : {}),
+      ...(execution.failureReason ? { failureReason: execution.failureReason } : {}),
+      receiver: execution.transaction.receiver.toBech32(),
+      gasLimit: execution.transaction.gasLimit.toString(),
+      value: execution.transaction.value.toString(),
+      data: Buffer.from(execution.transaction.data).toString(),
+    })),
+  }
+}
+
+function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
+  return {
+    message: error.message,
+    actionOutputs: error.actionOutputs,
+    failedExecution: {
+      actionIndex: error.failedExecution.actionIndex,
+      actionType: error.failedExecution.actionType,
+      txHash: error.failedExecution.txHash,
+      status: error.failedExecution.status,
+      ...(error.failedExecution.output ? { output: error.failedExecution.output } : {}),
+      ...(error.failedExecution.failureReason
+        ? { failureReason: error.failedExecution.failureReason }
+        : {}),
+      receiver: error.failedExecution.transaction.receiver.toBech32(),
+      gasLimit: error.failedExecution.transaction.gasLimit.toString(),
+      value: error.failedExecution.transaction.value.toString(),
+      data: Buffer.from(error.failedExecution.transaction.data).toString(),
+    },
+    executions: serializeExecutionResult({
+      actionOutputs: error.actionOutputs,
+      executions: error.executions,
+    }).executions,
+  }
+}
