@@ -115,6 +115,17 @@ For supported `swap-plan` actions, the client package also exports `buildTransac
 
 Chained actions can now reference the previous action's output amount. If you do not provide runtime outputs, the builder falls back to the conservative amount embedded by the facilitator. If you do have real outputs from earlier steps, pass them through `actionOutputs` so later transactions are constructed with the exact received amount.
 
+The client package also exports `executeSwapPlan()`, which signs, submits, and waits for supported actions step by step. It captures the actual output of each completed action from smart-contract results and feeds that amount into later actions automatically when the plan uses previous-output references.
+
+To try that flow in the example client, set `MX_EXECUTE_SWAP_PLAN=true`:
+
+```bash
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3100 \
+MX_EXECUTE_SWAP_PLAN=true \
+npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
+
 ## Advanced Verification
 
 The SDK supports `MultiTransferESDT` and `MultiESDTNFTTransfer` verification. It parses the MultiversX `data` field to ensure that multi-token transfers match the expected payment requirements.

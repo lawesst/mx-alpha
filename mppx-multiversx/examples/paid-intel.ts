@@ -11,6 +11,7 @@ import {
 } from '@multiversx/sdk-core'
 import {
   buildTransactionsFromSwapPlan,
+  executeSwapPlan,
   multiversx,
 } from '../src/client/index.ts'
 
@@ -33,6 +34,7 @@ Environment:
   MX_API_URL          Optional override for the MultiversX API URL
   MX_SETTLEMENT_TIMEOUT_MS  Optional tx settlement timeout in milliseconds (default: 60000)
   MX_POST_SETTLEMENT_DELAY_MS  Optional delay before retry after settlement (default: 3000)
+  MX_EXECUTE_SWAP_PLAN  Set to "true" to sign and submit swap-plan actions after fetching the paid plan
 
 Examples:
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- token-risk XMEX-abc123
@@ -103,6 +105,13 @@ async function main(): Promise<void> {
     request.kind === 'swap-plan'
       ? await buildUnsignedSwapPlanTransactions(sender, payload)
       : undefined
+  const execution =
+    request.kind === 'swap-plan' && process.env.MX_EXECUTE_SWAP_PLAN === 'true'
+      ? await executePaidSwapPlan({
+          account,
+          payload,
+        })
+      : undefined
 
   console.log(
     JSON.stringify(
@@ -112,6 +121,7 @@ async function main(): Promise<void> {
         txHash,
         payload,
         ...(unsignedTransactions ? { unsignedTransactions } : {}),
+        ...(execution ? { execution } : {}),
       },
       null,
       2,
@@ -353,6 +363,76 @@ async function buildUnsignedSwapPlanTransactions(
     value: transaction.value.toString(),
     data: Buffer.from(transaction.data).toString(),
   }))
+}
+
+async function executePaidSwapPlan(options: {
+  account: Account
+  payload: Record<string, unknown>
+}) {
+  const executionPlan = options.payload.executionPlan as
+    | {
+        chainId?: string
+        actions?: Array<{
+          type: string
+          tokenIn?: string
+          tokenOut?: string
+          transactionTemplate?: {
+            kind: 'smart-contract-execute'
+            chainId: string
+            receiver: string
+            gasLimit: string
+            function: string
+            nativeTransferAmount?: string
+            tokenTransfers?: Array<{
+              token: string
+              nonce?: number
+              amount?: string
+              amountSource?: {
+                kind: 'previous-action-output'
+                actionIndex: number
+                outputToken: string
+                fallbackAmount: string
+              }
+            }>
+            arguments?: Array<
+              | { type: 'TokenIdentifier'; value: string }
+              | { type: 'BigUInt'; value: string }
+            >
+          }
+        }>
+      }
+    | undefined
+
+  if (!executionPlan?.actions) {
+    return undefined
+  }
+
+  const provider = new ApiNetworkProvider(resolveApiUrl(executionPlan.chainId), {
+    clientName: 'mppx-multiversx-example',
+  })
+  const result = await executeSwapPlan({
+    signer: options.account,
+    provider,
+    plan: {
+      chainId: executionPlan.chainId,
+      actions: executionPlan.actions,
+    },
+    ignoreUnsupportedActions: true,
+  })
+
+  return {
+    actionOutputs: result.actionOutputs,
+    executions: result.executions.map((execution) => ({
+      actionIndex: execution.actionIndex,
+      actionType: execution.actionType,
+      txHash: execution.txHash,
+      output: execution.output,
+      receiver: execution.transaction.receiver.toBech32(),
+      gasLimit: execution.transaction.gasLimit.toString(),
+      value: execution.transaction.value.toString(),
+      data: Buffer.from(execution.transaction.data).toString(),
+    })),
+  }
 }
 
 async function createTaggedEsdtTransfer(
