@@ -667,22 +667,8 @@ export class IntelService {
       slippageBps,
     );
     const actions: Array<Record<string, unknown>> = [];
+    const warnings: string[] = [];
     let currentToken = fromAsset.dexIdentifier;
-
-    if (fromAsset.identifier === 'EGLD') {
-      actions.push({
-        type: 'wrap-egld',
-        tokenIn: 'EGLD',
-        tokenOut: this.mexBridgeAsset,
-        amountIn: simulation.request.amount,
-        amountInSmallestUnit: this.decimalToBaseUnits(
-          simulation.request.amount,
-          18,
-        ),
-        note: 'Wrap EGLD to WEGLD before interacting with xExchange pair contracts.',
-      });
-      currentToken = this.mexBridgeAsset;
-    }
 
     if (simulation.route.mode === 'same-asset') {
       return {
@@ -715,8 +701,41 @@ export class IntelService {
           token: toAsset.identifier,
         },
         actions,
-        warnings: ['No swap is required because the input and output assets are identical.'],
+        warnings: [
+          'No swap is required because the input and output assets are identical.',
+          ...warnings,
+        ],
       };
+    }
+
+    if (
+      (fromAsset.identifier === 'EGLD' || toAsset.identifier === 'EGLD') &&
+      !this.wegldSwapAddress()
+    ) {
+      warnings.push(
+        'Set MPP_WEGLD_SWAP_ADDRESS to attach executable wrap/unwrap templates for EGLD routes.',
+      );
+    }
+
+    if (fromAsset.identifier === 'EGLD') {
+      const wrapAmountSmallestUnit = this.decimalToBaseUnits(
+        simulation.request.amount,
+        18,
+      );
+      const wrapTemplate = this.buildWrapEgldTemplate({
+        amountSmallestUnit: wrapAmountSmallestUnit,
+      });
+
+      actions.push({
+        type: 'wrap-egld',
+        tokenIn: 'EGLD',
+        tokenOut: this.mexBridgeAsset,
+        amountIn: simulation.request.amount,
+        amountInSmallestUnit: wrapAmountSmallestUnit,
+        ...(wrapTemplate ? { transactionTemplate: wrapTemplate } : {}),
+        note: 'Wrap EGLD to WEGLD before interacting with xExchange pair contracts.',
+      });
+      currentToken = this.mexBridgeAsset;
     }
 
     if (routePairs.length === 0) {
@@ -750,6 +769,7 @@ export class IntelService {
         warnings: [
           'No active xExchange pair route was found, so this plan is advisory only.',
           'Use the simulation output for manual review before attempting execution.',
+          ...warnings,
         ],
       };
     }
@@ -823,13 +843,20 @@ export class IntelService {
     });
 
     if (toAsset.identifier === 'EGLD' && currentToken === this.mexBridgeAsset) {
+      const unwrapTemplate = this.buildUnwrapEgldTemplate({
+        amountSmallestUnit: this.decimalToBaseUnits(minOutputHuman, 18),
+      });
+
       actions.push({
         type: 'unwrap-egld',
         tokenIn: this.mexBridgeAsset,
         tokenOut: 'EGLD',
         minAmountOut: minOutputHuman,
         minAmountOutSmallestUnit: this.decimalToBaseUnits(minOutputHuman, 18),
-        note: 'Unwrap WEGLD back to EGLD after the final pair swap.',
+        ...(unwrapTemplate ? { transactionTemplate: unwrapTemplate } : {}),
+        note: unwrapTemplate
+          ? 'Unwrap the guaranteed minimum WEGLD back to EGLD after the final pair swap.'
+          : 'Unwrap WEGLD back to EGLD after the final pair swap.',
       });
     }
 
@@ -868,6 +895,7 @@ export class IntelService {
         ...(simulation.quote.pricingSource === 'xexchange-mex'
           ? []
           : ['Pair-specific execution data was not available, so review the route before execution.']),
+        ...warnings,
       ],
     };
   }
@@ -1117,11 +1145,61 @@ export class IntelService {
     };
   }
 
+  private buildWrapEgldTemplate(parameters: { amountSmallestUnit: string }) {
+    const wegldSwapAddress = this.wegldSwapAddress();
+    if (!wegldSwapAddress) {
+      return undefined;
+    }
+
+    return {
+      kind: 'smart-contract-execute',
+      chainId: this.chainId(),
+      receiver: wegldSwapAddress,
+      gasLimit: this.wegldSwapGasLimit(),
+      function: 'wrapEgld',
+      nativeTransferAmount: parameters.amountSmallestUnit,
+      tokenTransfers: [],
+      arguments: [],
+    };
+  }
+
+  private buildUnwrapEgldTemplate(parameters: { amountSmallestUnit: string }) {
+    const wegldSwapAddress = this.wegldSwapAddress();
+    if (!wegldSwapAddress) {
+      return undefined;
+    }
+
+    return {
+      kind: 'smart-contract-execute',
+      chainId: this.chainId(),
+      receiver: wegldSwapAddress,
+      gasLimit: this.wegldSwapGasLimit(),
+      function: 'unwrapEgld',
+      tokenTransfers: [
+        {
+          token: this.mexBridgeAsset,
+          nonce: 0,
+          amount: parameters.amountSmallestUnit,
+        },
+      ],
+      arguments: [],
+    };
+  }
+
   private chainId(): string {
     return process.env.MPP_CHAIN_ID || 'D';
   }
 
+  private wegldSwapAddress(): string | undefined {
+    const configured = process.env.MPP_WEGLD_SWAP_ADDRESS?.trim();
+    return configured ? configured : undefined;
+  }
+
   private swapGasLimit(): string {
     return process.env.MPP_SWAP_EXECUTE_GAS_LIMIT || '100000000';
+  }
+
+  private wegldSwapGasLimit(): string {
+    return process.env.MPP_WEGLD_SWAP_GAS_LIMIT || '10000000';
   }
 }

@@ -21,6 +21,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - xExchange-aware route simulation
 - Execution planning for fixed-input swaps
 - Transaction templates in `swap-plan`
+- EGLD wrap and unwrap templates when `MPP_WEGLD_SWAP_ADDRESS` is configured
 - Client-side transaction construction into unsigned MultiversX transactions
 
 ## What The Product Does
@@ -61,6 +62,7 @@ PORT=3000 \
 DATABASE_URL=file:./dev.db \
 MPP_SECRET_KEY=local-dev-secret \
 MPP_RECIPIENT=erd1... \
+MPP_WEGLD_SWAP_ADDRESS=erd1... \
 MPP_DEFAULT_CURRENCY=EGLD \
 MPP_CHAIN_ID=D \
 MPP_TOKEN_DECIMALS=18 \
@@ -78,6 +80,6 @@ npm run example:paid-intel -- swap-plan USDC-c76f1f RIDE-7d18e9 25
 
 ## Notes
 
-- `swap-plan` currently emits transaction templates for supported `swap-fixed-input` pair hops.
-- `wrap-egld` and `unwrap-egld` actions are still advisory and do not yet include templates.
+- `swap-plan` emits pair-hop templates by default and can also emit EGLD wrap/unwrap templates when `MPP_WEGLD_SWAP_ADDRESS` is set.
+- unwrap templates are built from the guaranteed minimum output, so clients may still want to adjust the final unwrap amount after execution if more WEGLD is received.
 - This repo is intended as a buildable prototype rather than a polished production release.

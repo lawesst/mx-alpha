@@ -11,7 +11,7 @@ A high-performance facilitator microservice for the **Mobile Payment Protocol (M
 - **Paid Intel Endpoints**: Includes `token-risk`, `wallet-profile`, `swap-sim`, and `swap-plan` endpoints for agent-facing MultiversX intelligence.
 - **xExchange-aware Quotes**: `swap-sim` prefers live xExchange MEX pair metadata and falls back to public token metadata heuristics when no active route exists.
 - **Execution Planning**: `swap-plan` returns an execution-oriented action list with pair addresses, min-output targets, and slippage suggestions for fixed-input swaps.
-- **Transaction Templates**: `swap-plan` now embeds smart-contract execute templates for supported pair hops, ready to be turned into unsigned MultiversX transactions by a client SDK.
+- **Transaction Templates**: `swap-plan` now embeds smart-contract execute templates for supported pair hops, plus optional EGLD wrap/unwrap templates when a WEGLD swap contract address is configured.
 - **Security**: HMAC-SHA256 bound challenge IDs, rate limiting, and TTL-based challenge expiration.
 - **Production Ready**: Full test coverage and environment-driven configuration.
 
@@ -33,6 +33,8 @@ The service is configured via environment variables:
 | `MPP_WALLET_PROFILE_PRICE` | Human-readable price for `GET /intel/wallet-profile` | `0.10` |
 | `MPP_SWAP_SIM_PRICE` | Human-readable price for `GET /intel/swap-sim` | `0.07` |
 | `MPP_SWAP_PLAN_PRICE` | Human-readable price for `GET /intel/swap-plan` | `0.12` |
+| `MPP_WEGLD_SWAP_ADDRESS` | Optional WEGLD swap contract address used to attach executable `wrap-egld` / `unwrap-egld` templates | N/A |
+| `MPP_WEGLD_SWAP_GAS_LIMIT` | Gas limit used for WEGLD wrap and unwrap templates | `10000000` |
 | `MVX_ANALYTICS_API_URL` | Base URL for public analytics lookups | `https://api.multiversx.com` |
 
 ## Discovery Endpoint
@@ -55,6 +57,7 @@ PORT=3000 \
 DATABASE_URL=file:./dev.db \
 MPP_SECRET_KEY=local-dev-secret \
 MPP_RECIPIENT=erd1... \
+MPP_WEGLD_SWAP_ADDRESS=erd1... \
 MPP_DEFAULT_CURRENCY=EGLD \
 MPP_CHAIN_ID=D \
 MPP_TOKEN_DECIMALS=18 \

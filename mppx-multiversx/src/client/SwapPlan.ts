@@ -14,12 +14,13 @@ export type SwapPlanTransactionTemplate = {
   receiver: string
   gasLimit: string
   function: string
-  tokenTransfers: Array<{
+  nativeTransferAmount?: string
+  tokenTransfers?: Array<{
     token: string
     nonce?: number
     amount: string
   }>
-  arguments: Array<
+  arguments?: Array<
     | { type: 'TokenIdentifier'; value: string }
     | { type: 'BigUInt'; value: string }
   >
@@ -91,23 +92,30 @@ export async function buildTransactionsFromSwapPlan(
       contract: Address.newFromBech32(template.receiver),
       gasLimit: BigInt(template.gasLimit),
       function: template.function,
-      arguments: template.arguments.map((argument) => {
+      arguments: (template.arguments || []).map((argument) => {
         if (argument.type === 'TokenIdentifier') {
           return new TokenIdentifierValue(argument.value)
         }
 
         return new BigUIntValue(BigInt(argument.value))
       }),
-      tokenTransfers: template.tokenTransfers.map(
-        (transfer) =>
-          new TokenTransfer({
-            token: new Token({
-              identifier: transfer.token,
-              ...(transfer.nonce ? { nonce: BigInt(transfer.nonce) } : {}),
-            }),
-            amount: BigInt(transfer.amount),
-          }),
-      ),
+      ...(template.nativeTransferAmount
+        ? { nativeTransferAmount: BigInt(template.nativeTransferAmount) }
+        : {}),
+      ...(template.tokenTransfers
+        ? {
+            tokenTransfers: template.tokenTransfers.map(
+              (transfer) =>
+                new TokenTransfer({
+                  token: new Token({
+                    identifier: transfer.token,
+                    ...(transfer.nonce ? { nonce: BigInt(transfer.nonce) } : {}),
+                  }),
+                  amount: BigInt(transfer.amount),
+                }),
+            ),
+          }
+        : {}),
     })
 
     transactions.push(transaction)

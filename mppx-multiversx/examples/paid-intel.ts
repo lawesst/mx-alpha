@@ -313,8 +313,9 @@ async function buildUnsignedSwapPlanTransactions(
             receiver: string
             gasLimit: string
             function: string
-            tokenTransfers: Array<{ token: string; nonce?: number; amount: string }>
-            arguments: Array<
+            nativeTransferAmount?: string
+            tokenTransfers?: Array<{ token: string; nonce?: number; amount: string }>
+            arguments?: Array<
               | { type: 'TokenIdentifier'; value: string }
               | { type: 'BigUInt'; value: string }
             >
