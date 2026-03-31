@@ -5,6 +5,8 @@ import {
   SwapPlanPolicyError,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
+  simulateSwapPlan,
+  SwapPlanSimulationError,
 } from './SwapPlan.js'
 
 describe('swap plan transaction construction', () => {
@@ -528,6 +530,275 @@ describe('swap plan transaction construction', () => {
     }
 
     throw new Error('Expected executeSwapPlan() to throw a SwapPlanPolicyError')
+  })
+
+  it('simulates swap-plan actions sequentially and uses simulated outputs for later hops', async () => {
+    const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
+    const senderAddress = Address.newFromBech32(sender)
+    const simulatedTransactions: { nonce: bigint; data: string }[] = []
+
+    const result = await simulateSwapPlan({
+      sender,
+      provider: {
+        getAccount: async () => ({ nonce: 11n }),
+        simulateTransaction: async (transaction) => {
+          simulatedTransactions.push({
+            nonce: transaction.nonce,
+            data: Buffer.from(transaction.data).toString(),
+          })
+
+          if (simulatedTransactions.length === 1) {
+            return new TransactionOnNetwork({
+              hash: 'sim-1',
+              status: new TransactionStatus('success'),
+              smartContractResults: [
+                {
+                  receiver: senderAddress,
+                  raw: {
+                    tokens: ['WEGLD-bd4d79'],
+                    esdtValues: ['2300000000000000000'],
+                  },
+                } as never,
+              ],
+            })
+          }
+
+          return new TransactionOnNetwork({
+            hash: 'sim-2',
+            status: new TransactionStatus('success'),
+            smartContractResults: [
+              {
+                receiver: senderAddress,
+                raw: {
+                  value: '2300000000000000000',
+                },
+              } as never,
+            ],
+          })
+        },
+      },
+      plan: {
+        chainId: 'D',
+        actions: [
+          {
+            type: 'wrap-egld',
+            tokenOut: 'WEGLD-bd4d79',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgq4axqc749vuqr27snr8d8qgvlmz44chsr0n4sm4a72g',
+              gasLimit: '10000000',
+              function: 'wrapEgld',
+              nativeTransferAmount: '2000000000000000000',
+              tokenTransfers: [],
+              arguments: [],
+            },
+          },
+          {
+            type: 'unwrap-egld',
+            tokenOut: 'EGLD',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgq4axqc749vuqr27snr8d8qgvlmz44chsr0n4sm4a72g',
+              gasLimit: '10000000',
+              function: 'unwrapEgld',
+              tokenTransfers: [
+                {
+                  token: 'WEGLD-bd4d79',
+                  nonce: 0,
+                  amountSource: {
+                    kind: 'previous-action-output',
+                    actionIndex: 0,
+                    outputToken: 'WEGLD-bd4d79',
+                    fallbackAmount: '2000000000000000000',
+                  },
+                },
+              ],
+              arguments: [],
+            },
+          },
+        ],
+      },
+      ignoreUnsupportedActions: true,
+    })
+
+    expect(simulatedTransactions[0].nonce).toBe(11n)
+    expect(simulatedTransactions[1].nonce).toBe(12n)
+    expect(simulatedTransactions[1].data).toContain(
+      `ESDTTransfer@5745474c442d626434643739@${BigInt('2300000000000000000').toString(16)}`,
+    )
+    expect(result.actionOutputs[0]).toEqual({
+      token: 'WEGLD-bd4d79',
+      amount: '2300000000000000000',
+    })
+    expect(result.simulations[0].status).toBe('success')
+    expect(result.simulations[1].status).toBe('success')
+  })
+
+  it('throws a structured simulation error when dry-run fails', async () => {
+    const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
+
+    try {
+      await simulateSwapPlan({
+        sender,
+        provider: {
+          getAccount: async () => ({ nonce: 4n }),
+          simulateTransaction: async () =>
+            new TransactionOnNetwork({
+              hash: 'sim-fail',
+              status: new TransactionStatus('fail'),
+              smartContractResults: [],
+              raw: {
+                reason: 'simulation slippage exceeded',
+              },
+            }),
+        },
+        plan: {
+          chainId: 'D',
+          actions: [
+            {
+              type: 'swap-fixed-input',
+              transactionTemplate: {
+                kind: 'smart-contract-execute',
+                chainId: 'D',
+                receiver:
+                  'erd1qqqqqqqqqqqqqpgqeel2kumf0r8ffyhth7pqdujjat9nx0862jpsg2pqaq',
+                gasLimit: '100000000',
+                function: 'swapTokensFixedInput',
+                tokenTransfers: [
+                  {
+                    token: 'USDC-c76f1f',
+                    nonce: 0,
+                    amount: '25000000',
+                  },
+                ],
+                arguments: [
+                  {
+                    type: 'TokenIdentifier',
+                    value: 'WEGLD-bd4d79',
+                  },
+                  {
+                    type: 'BigUInt',
+                    value: '6456540000000000000',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      })
+    } catch (error) {
+      expect(error).toBeInstanceOf(SwapPlanSimulationError)
+      expect(error).toMatchObject({
+        failedSimulation: {
+          actionIndex: 0,
+          actionType: 'swap-fixed-input',
+          status: 'fail',
+          failureReason: 'simulation slippage exceeded',
+        },
+        simulations: [
+          expect.objectContaining({
+            actionIndex: 0,
+            status: 'fail',
+          }),
+        ],
+      })
+      return
+    }
+
+    throw new Error('Expected simulateSwapPlan() to throw a SwapPlanSimulationError')
+  })
+
+  it('blocks broadcast when pre-broadcast simulation fails', async () => {
+    const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
+    const signerAddress = Address.newFromBech32(sender)
+    const sentTransactions: string[] = []
+
+    try {
+      await executeSwapPlan({
+        signer: {
+          address: signerAddress,
+          sign: async () => new Uint8Array(),
+          signTransaction: async () => new Uint8Array([1, 2, 3]),
+          verifyTransactionSignature: async () => true,
+          signMessage: async () => new Uint8Array(),
+          verifyMessageSignature: async () => true,
+        },
+        provider: {
+          getAccount: async () => ({ nonce: 6n }),
+          sendTransaction: async (transaction) => {
+            sentTransactions.push(Buffer.from(transaction.data).toString())
+            return `tx-${sentTransactions.length}`
+          },
+          getTransaction: async (txHash) =>
+            new TransactionOnNetwork({
+              hash: txHash,
+              status: new TransactionStatus('success'),
+              smartContractResults: [],
+            }),
+          simulateTransaction: async () =>
+            new TransactionOnNetwork({
+              hash: 'sim-fail',
+              status: new TransactionStatus('fail'),
+              smartContractResults: [],
+              raw: {
+                reason: 'pair contract would reject the route',
+              },
+            }),
+        },
+        plan: {
+          chainId: 'D',
+          strategy: 'xexchange-pair-sequence',
+          actions: [
+            {
+              type: 'swap-fixed-input',
+              tokenOut: 'WEGLD-bd4d79',
+              transactionTemplate: {
+                kind: 'smart-contract-execute',
+                chainId: 'D',
+                receiver:
+                  'erd1qqqqqqqqqqqqqpgqeel2kumf0r8ffyhth7pqdujjat9nx0862jpsg2pqaq',
+                gasLimit: '100000000',
+                function: 'swapTokensFixedInput',
+                tokenTransfers: [
+                  {
+                    token: 'USDC-c76f1f',
+                    nonce: 0,
+                    amount: '25000000',
+                  },
+                ],
+                arguments: [
+                  {
+                    type: 'TokenIdentifier',
+                    value: 'WEGLD-bd4d79',
+                  },
+                  {
+                    type: 'BigUInt',
+                    value: '6456540000000000000',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        simulateBeforeBroadcast: true,
+      })
+    } catch (error) {
+      expect(error).toBeInstanceOf(SwapPlanSimulationError)
+      expect(error).toMatchObject({
+        failedSimulation: {
+          status: 'fail',
+          failureReason: 'pair contract would reject the route',
+        },
+      })
+      expect(sentTransactions).toHaveLength(0)
+      return
+    }
+
+    throw new Error('Expected executeSwapPlan() to throw a SwapPlanSimulationError')
   })
 
   it('falls back to embedded amounts when execution outputs are unavailable', async () => {

@@ -94,6 +94,8 @@ export type ExecuteSwapPlanParameters = Omit<
 > & {
   signer: IAccount
   provider: Pick<INetworkProvider, 'getAccount' | 'sendTransaction' | 'getTransaction'>
+  simulationProvider?: Pick<INetworkProvider, 'simulateTransaction'>
+  simulateBeforeBroadcast?: boolean
   completionTimeoutMs?: number
   pollIntervalMs?: number
 }
@@ -101,6 +103,16 @@ export type ExecuteSwapPlanParameters = Omit<
 export type SwapPlanActionOutput = {
   token?: string
   amount: string
+}
+
+export type SimulatedSwapPlanAction = {
+  actionIndex: number
+  actionType: string
+  transaction: Transaction
+  simulatedTransaction: TransactionOnNetwork
+  status: string
+  output?: SwapPlanActionOutput
+  failureReason?: string
 }
 
 export type ExecutedSwapPlanAction = {
@@ -117,6 +129,15 @@ export type ExecutedSwapPlanAction = {
 export type ExecuteSwapPlanResult = {
   actionOutputs: NonNullable<BuildSwapPlanTransactionsParameters['actionOutputs']>
   executions: ExecutedSwapPlanAction[]
+}
+
+export type SimulateSwapPlanParameters = BuildSwapPlanTransactionsParameters & {
+  provider: Pick<INetworkProvider, 'getAccount' | 'simulateTransaction'>
+}
+
+export type SimulateSwapPlanResult = {
+  actionOutputs: NonNullable<BuildSwapPlanTransactionsParameters['actionOutputs']>
+  simulations: SimulatedSwapPlanAction[]
 }
 
 export class SwapPlanExecutionError extends Error {
@@ -142,6 +163,32 @@ export class SwapPlanExecutionError extends Error {
     this.actionOutputs = parameters.actionOutputs
     this.executions = parameters.executions
     this.failedExecution = parameters.failedExecution
+  }
+}
+
+export class SwapPlanSimulationError extends Error {
+  readonly actionOutputs: SimulateSwapPlanResult['actionOutputs']
+  readonly simulations: SimulatedSwapPlanAction[]
+  readonly failedSimulation: SimulatedSwapPlanAction
+
+  constructor(parameters: {
+    actionOutputs: SimulateSwapPlanResult['actionOutputs']
+    simulations: SimulatedSwapPlanAction[]
+    failedSimulation: SimulatedSwapPlanAction
+  }) {
+    const status = parameters.failedSimulation.status
+    const failureReason = parameters.failedSimulation.failureReason
+
+    super(
+      failureReason
+        ? `Swap plan simulation for action ${parameters.failedSimulation.actionIndex} (${parameters.failedSimulation.actionType}) failed with status ${status}: ${failureReason}`
+        : `Swap plan simulation for action ${parameters.failedSimulation.actionIndex} (${parameters.failedSimulation.actionType}) failed with status ${status}`,
+    )
+
+    this.name = 'SwapPlanSimulationError'
+    this.actionOutputs = parameters.actionOutputs
+    this.simulations = parameters.simulations
+    this.failedSimulation = parameters.failedSimulation
   }
 }
 
@@ -387,9 +434,9 @@ export async function buildTransactionFromSwapPlanAction(
   })
 }
 
-export async function executeSwapPlan(
-  parameters: ExecuteSwapPlanParameters,
-): Promise<ExecuteSwapPlanResult> {
+export async function simulateSwapPlan(
+  parameters: SimulateSwapPlanParameters,
+): Promise<SimulateSwapPlanResult> {
   if (parameters.executionPolicy) {
     validateSwapExecutionPlan({
       plan: parameters.plan,
@@ -400,9 +447,12 @@ export async function executeSwapPlan(
     })
   }
 
+  const sender =
+    typeof parameters.sender === 'string'
+      ? Address.newFromBech32(parameters.sender)
+      : parameters.sender
   const actionOutputs = { ...(parameters.actionOutputs || {}) }
-  const executions: ExecutedSwapPlanAction[] = []
-  const sender = parameters.signer.address
+  const simulations: SimulatedSwapPlanAction[] = []
   let nextNonce = (await parameters.provider.getAccount(sender)).nonce
 
   for (const [actionIndex, action] of parameters.plan.actions.entries()) {
@@ -429,6 +479,112 @@ export async function executeSwapPlan(
     }
 
     transaction.nonce = nextNonce
+
+    const simulation = await simulateSwapPlanAction({
+      provider: parameters.provider,
+      action,
+      actionIndex,
+      sender,
+      transaction,
+    })
+
+    simulations.push(simulation)
+
+    if (!simulation.simulatedTransaction.status.isSuccessful()) {
+      throw new SwapPlanSimulationError({
+        actionOutputs,
+        simulations: [...simulations],
+        failedSimulation: simulation,
+      })
+    }
+
+    if (simulation.output) {
+      actionOutputs[actionIndex] = simulation.output
+    }
+
+    nextNonce += 1n
+  }
+
+  return {
+    actionOutputs,
+    simulations,
+  }
+}
+
+export async function executeSwapPlan(
+  parameters: ExecuteSwapPlanParameters,
+): Promise<ExecuteSwapPlanResult> {
+  if (parameters.executionPolicy) {
+    validateSwapExecutionPlan({
+      plan: parameters.plan,
+      policy: parameters.executionPolicy,
+      ...(parameters.ignoreUnsupportedActions !== undefined
+        ? { ignoreUnsupportedActions: parameters.ignoreUnsupportedActions }
+        : {}),
+    })
+  }
+
+  const actionOutputs = { ...(parameters.actionOutputs || {}) }
+  const executions: ExecutedSwapPlanAction[] = []
+  const simulations: SimulatedSwapPlanAction[] = []
+  const sender = parameters.signer.address
+  const simulationProvider =
+    parameters.simulateBeforeBroadcast
+      ? resolveSimulationProvider(parameters)
+      : undefined
+  let nextNonce = (await parameters.provider.getAccount(sender)).nonce
+
+  if (parameters.simulateBeforeBroadcast && !simulationProvider) {
+    throw new Error(
+      'simulateBeforeBroadcast requires a provider or simulationProvider with simulateTransaction()',
+    )
+  }
+
+  for (const [actionIndex, action] of parameters.plan.actions.entries()) {
+    const transactionParameters: BuildSwapPlanActionTransactionParameters = {
+      sender,
+      action,
+      actionIndex,
+      ...(parameters.plan.chainId ? { chainId: parameters.plan.chainId } : {}),
+      ...(parameters.minGasLimit !== undefined
+        ? { minGasLimit: parameters.minGasLimit }
+        : {}),
+      ...(parameters.gasLimitPerByte !== undefined
+        ? { gasLimitPerByte: parameters.gasLimitPerByte }
+        : {}),
+      ...(parameters.ignoreUnsupportedActions !== undefined
+        ? { ignoreUnsupportedActions: parameters.ignoreUnsupportedActions }
+        : {}),
+      ...(Object.keys(actionOutputs).length > 0 ? { actionOutputs } : {}),
+    }
+    const transaction = await buildTransactionFromSwapPlanAction(transactionParameters)
+
+    if (!transaction) {
+      continue
+    }
+
+    transaction.nonce = nextNonce
+
+    if (simulationProvider) {
+      const simulation = await simulateSwapPlanAction({
+        provider: simulationProvider,
+        action,
+        actionIndex,
+        sender,
+        transaction,
+      })
+
+      simulations.push(simulation)
+
+      if (!simulation.simulatedTransaction.status.isSuccessful()) {
+        throw new SwapPlanSimulationError({
+          actionOutputs,
+          simulations: [...simulations],
+          failedSimulation: simulation,
+        })
+      }
+    }
+
     transaction.signature = await parameters.signer.signTransaction(transaction)
 
     const txHash = await parameters.provider.sendTransaction(transaction)
@@ -553,6 +709,58 @@ async function waitForCompletedTransaction(parameters: {
   }
 
   throw new Error(`Timed out waiting for transaction ${parameters.txHash} to complete`)
+}
+
+async function simulateSwapPlanAction(parameters: {
+  provider: Pick<INetworkProvider, 'simulateTransaction'>
+  action: SwapPlanAction
+  actionIndex: number
+  sender: Address
+  transaction: Transaction
+}): Promise<SimulatedSwapPlanAction> {
+  const simulatedTransaction = await parameters.provider.simulateTransaction(
+    parameters.transaction,
+  )
+  const status = simulatedTransaction.status.toString()
+  const failureReason = extractTransactionFailureReason(simulatedTransaction)
+  const output = simulatedTransaction.status.isSuccessful()
+    ? extractActionOutput({
+        action: parameters.action,
+        sender: parameters.sender,
+        transaction: simulatedTransaction,
+      })
+    : undefined
+
+  return {
+    actionIndex: parameters.actionIndex,
+    actionType: parameters.action.type,
+    transaction: parameters.transaction,
+    simulatedTransaction,
+    status,
+    ...(output ? { output } : {}),
+    ...(failureReason ? { failureReason } : {}),
+  }
+}
+
+function resolveSimulationProvider(
+  parameters: ExecuteSwapPlanParameters,
+): Pick<INetworkProvider, 'simulateTransaction'> | undefined {
+  if (parameters.simulationProvider) {
+    return parameters.simulationProvider
+  }
+
+  const providerWithSimulation = parameters.provider as ExecuteSwapPlanParameters['provider'] &
+    Partial<Pick<INetworkProvider, 'simulateTransaction'>>
+
+  if (typeof providerWithSimulation.simulateTransaction === 'function') {
+    return {
+      simulateTransaction: providerWithSimulation.simulateTransaction.bind(
+        providerWithSimulation,
+      ),
+    }
+  }
+
+  return undefined
 }
 
 function extractTransactionFailureReason(

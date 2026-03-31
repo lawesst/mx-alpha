@@ -119,6 +119,8 @@ The client package also exports `executeSwapPlan()`, which signs, submits, and w
 
 If any on-chain step completes with a failed status, `executeSwapPlan()` now throws `SwapPlanExecutionError`. The error includes the failed execution plus all prior successful steps and resolved outputs, so callers can log or recover from partial execution state cleanly.
 
+For dry-run workflows, the client package also exports `simulateSwapPlan()`. It builds the same action sequence, assigns sequential nonces, runs each transaction through `simulateTransaction()`, and carries simulated outputs forward to later actions. Failed dry-runs throw `SwapPlanSimulationError` with partial simulation state preserved.
+
 For pre-broadcast safety checks, the client package also accepts an `executionPolicy` on `buildTransactionsFromSwapPlan()` and `executeSwapPlan()`. This can enforce limits such as:
 - maximum action count
 - allowed action types
@@ -138,6 +140,17 @@ npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 
 The example runner applies conservative defaults when `MX_EXECUTE_SWAP_PLAN=true`: it only allows the `xexchange-pair-sequence` strategy, only allows `wrap-egld`, `swap-fixed-input`, and `unwrap-egld` actions, and caps the plan at 4 actions unless you override those limits with the `MX_SWAP_*` environment variables.
+
+You can also run a dry-run without broadcasting:
+
+```bash
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3100 \
+MX_SIMULATE_SWAP_PLAN=true \
+npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
+
+When `MX_EXECUTE_SWAP_PLAN=true`, the example now performs a pre-broadcast dry-run by default. Set `MX_SKIP_PREBROADCAST_SIMULATION=true` if you want to bypass that guard.
 
 ## Advanced Verification
 

@@ -12,8 +12,10 @@ import {
 import {
   SwapPlanExecutionError,
   SwapPlanPolicyError,
+  SwapPlanSimulationError,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
+  simulateSwapPlan,
   multiversx,
 } from '../src/client/index.ts'
 import type {
@@ -40,7 +42,9 @@ Environment:
   MX_API_URL          Optional override for the MultiversX API URL
   MX_SETTLEMENT_TIMEOUT_MS  Optional tx settlement timeout in milliseconds (default: 60000)
   MX_POST_SETTLEMENT_DELAY_MS  Optional delay before retry after settlement (default: 3000)
+  MX_SIMULATE_SWAP_PLAN  Set to "true" to dry-run swap-plan actions without broadcasting
   MX_EXECUTE_SWAP_PLAN  Set to "true" to sign and submit swap-plan actions after fetching the paid plan
+  MX_SKIP_PREBROADCAST_SIMULATION  Set to "true" to execute without the built-in dry-run guard
   MX_SWAP_MAX_ACTIONS  Optional policy guard for maximum action count (default when executing: 4)
   MX_SWAP_ALLOWED_ACTION_TYPES  Optional comma-separated action allowlist
   MX_SWAP_ALLOWED_RECEIVERS  Optional comma-separated contract receiver allowlist
@@ -119,6 +123,14 @@ async function main(): Promise<void> {
     request.kind === 'swap-plan'
       ? await buildUnsignedSwapPlanTransactions(sender, payload)
       : undefined
+  const simulation =
+    request.kind === 'swap-plan' && process.env.MX_SIMULATE_SWAP_PLAN === 'true'
+      ? await simulatePaidSwapPlan({
+          sender,
+          payload,
+          executionPolicy,
+        })
+      : undefined
   const execution =
     request.kind === 'swap-plan' && process.env.MX_EXECUTE_SWAP_PLAN === 'true'
       ? await executePaidSwapPlan({
@@ -127,11 +139,29 @@ async function main(): Promise<void> {
           executionPolicy,
         })
       : undefined
+  const simulationError =
+    request.kind === 'swap-plan' &&
+    process.env.MX_SIMULATE_SWAP_PLAN === 'true' &&
+    simulation instanceof SwapPlanSimulationError
+      ? serializeSwapPlanSimulationError(simulation)
+      : undefined
+  const simulationPolicyError =
+    request.kind === 'swap-plan' &&
+    process.env.MX_SIMULATE_SWAP_PLAN === 'true' &&
+    simulation instanceof SwapPlanPolicyError
+      ? serializeSwapPlanPolicyError(simulation)
+      : undefined
   const executionError =
     request.kind === 'swap-plan' &&
     process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
     execution instanceof SwapPlanExecutionError
       ? serializeSwapPlanExecutionError(execution)
+      : undefined
+  const executionSimulationError =
+    request.kind === 'swap-plan' &&
+    process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
+    execution instanceof SwapPlanSimulationError
+      ? serializeSwapPlanSimulationError(execution)
       : undefined
   const executionPolicyError =
     request.kind === 'swap-plan' &&
@@ -148,11 +178,20 @@ async function main(): Promise<void> {
         txHash,
         payload,
         ...(unsignedTransactions ? { unsignedTransactions } : {}),
+        ...(simulation &&
+        !(simulation instanceof SwapPlanSimulationError) &&
+        !(simulation instanceof SwapPlanPolicyError)
+          ? { simulation }
+          : {}),
+        ...(simulationError ? { simulationError } : {}),
+        ...(simulationPolicyError ? { simulationPolicyError } : {}),
         ...(execution && !(execution instanceof SwapPlanExecutionError)
+          && !(execution instanceof SwapPlanSimulationError)
           && !(execution instanceof SwapPlanPolicyError)
           ? { execution }
           : {}),
         ...(executionError ? { executionError } : {}),
+        ...(executionSimulationError ? { executionSimulationError } : {}),
         ...(executionPolicyError ? { executionPolicyError } : {}),
       },
       null,
@@ -160,7 +199,13 @@ async function main(): Promise<void> {
     ),
   )
 
-  if (executionError || executionPolicyError) {
+  if (
+    simulationError ||
+    simulationPolicyError ||
+    executionError ||
+    executionSimulationError ||
+    executionPolicyError
+  ) {
     process.exitCode = 1
   }
 }
@@ -374,6 +419,7 @@ async function executePaidSwapPlan(options: {
 }): Promise<
   | ReturnType<typeof serializeExecutionResult>
   | SwapPlanExecutionError
+  | SwapPlanSimulationError
   | SwapPlanPolicyError
   | undefined
 > {
@@ -391,12 +437,60 @@ async function executePaidSwapPlan(options: {
       provider,
       plan: executionPlan,
       ignoreUnsupportedActions: true,
+      simulateBeforeBroadcast:
+        process.env.MX_SKIP_PREBROADCAST_SIMULATION !== 'true',
       ...(options.executionPolicy ? { executionPolicy: options.executionPolicy } : {}),
     })
 
     return serializeExecutionResult(result)
   } catch (error) {
     if (error instanceof SwapPlanExecutionError) {
+      return error
+    }
+
+    if (error instanceof SwapPlanPolicyError) {
+      return error
+    }
+
+    if (error instanceof SwapPlanSimulationError) {
+      return error
+    }
+
+    throw error
+  }
+}
+
+async function simulatePaidSwapPlan(options: {
+  sender: string
+  payload: Record<string, unknown>
+  executionPolicy?: SwapPlanExecutionPolicy
+}): Promise<
+  | ReturnType<typeof serializeSimulationResult>
+  | SwapPlanSimulationError
+  | SwapPlanPolicyError
+  | undefined
+> {
+  const executionPlan = extractExecutionPlan(options.payload)
+  if (!executionPlan?.actions) {
+    return undefined
+  }
+
+  const provider = new ApiNetworkProvider(resolveApiUrl(executionPlan.chainId), {
+    clientName: 'mppx-multiversx-example',
+  })
+
+  try {
+    const result = await simulateSwapPlan({
+      sender: options.sender,
+      provider,
+      plan: executionPlan,
+      ignoreUnsupportedActions: true,
+      ...(options.executionPolicy ? { executionPolicy: options.executionPolicy } : {}),
+    })
+
+    return serializeSimulationResult(result)
+  } catch (error) {
+    if (error instanceof SwapPlanSimulationError) {
       return error
     }
 
@@ -545,6 +639,40 @@ function serializeExecutionResult(result: {
   }
 }
 
+function serializeSimulationResult(result: {
+  actionOutputs: Record<number, { token?: string; amount: string }>
+  simulations: Array<{
+    actionIndex: number
+    actionType: string
+    status: string
+    output?: { token?: string; amount: string }
+    failureReason?: string
+    transaction: {
+      receiver: Address
+      gasLimit: bigint
+      value: bigint
+      data: Uint8Array | Buffer
+    }
+  }>
+}) {
+  return {
+    actionOutputs: result.actionOutputs,
+    simulations: result.simulations.map((simulation) => ({
+      actionIndex: simulation.actionIndex,
+      actionType: simulation.actionType,
+      status: simulation.status,
+      ...(simulation.output ? { output: simulation.output } : {}),
+      ...(simulation.failureReason
+        ? { failureReason: simulation.failureReason }
+        : {}),
+      receiver: simulation.transaction.receiver.toBech32(),
+      gasLimit: simulation.transaction.gasLimit.toString(),
+      value: simulation.transaction.value.toString(),
+      data: Buffer.from(simulation.transaction.data).toString(),
+    })),
+  }
+}
+
 function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
   return {
     message: error.message,
@@ -567,6 +695,32 @@ function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
       actionOutputs: error.actionOutputs,
       executions: error.executions,
     }).executions,
+  }
+}
+
+function serializeSwapPlanSimulationError(error: SwapPlanSimulationError) {
+  return {
+    message: error.message,
+    actionOutputs: error.actionOutputs,
+    failedSimulation: {
+      actionIndex: error.failedSimulation.actionIndex,
+      actionType: error.failedSimulation.actionType,
+      status: error.failedSimulation.status,
+      ...(error.failedSimulation.output
+        ? { output: error.failedSimulation.output }
+        : {}),
+      ...(error.failedSimulation.failureReason
+        ? { failureReason: error.failedSimulation.failureReason }
+        : {}),
+      receiver: error.failedSimulation.transaction.receiver.toBech32(),
+      gasLimit: error.failedSimulation.transaction.gasLimit.toString(),
+      value: error.failedSimulation.transaction.value.toString(),
+      data: Buffer.from(error.failedSimulation.transaction.data).toString(),
+    },
+    simulations: serializeSimulationResult({
+      actionOutputs: error.actionOutputs,
+      simulations: error.simulations,
+    }).simulations,
   }
 }
 

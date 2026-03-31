@@ -5,13 +5,17 @@ export {
   buildTransactionFromSwapPlanAction,
   buildTransactionsFromSwapPlan,
   executeSwapPlan,
+  simulateSwapPlan,
   SwapPlanExecutionError,
   SwapPlanPolicyError,
+  SwapPlanSimulationError,
   validateSwapExecutionPlan,
 } from './SwapPlan.js'
 export type {
   ExecutedSwapPlanAction,
   ExecuteSwapPlanResult,
+  SimulateSwapPlanResult,
+  SimulatedSwapPlanAction,
   SwapExecutionPlan,
   SwapPlanExecutionPolicy,
   SwapPlanActionOutput,
