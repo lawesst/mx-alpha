@@ -5,4 +5,5 @@
 **/.env
 **/dev.db
 **/prisma/dev.db
+**/reports/
 live-test/

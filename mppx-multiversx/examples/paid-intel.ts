@@ -22,6 +22,10 @@ import type {
   SwapExecutionPlan,
   SwapPlanExecutionPolicy,
 } from '../src/client/index.ts'
+import {
+  buildPaidIntelAuditReport,
+  persistPaidIntelAuditReport,
+} from './paid-intel-report.ts'
 
 type ExampleRequest =
   | { kind: 'token-risk'; token: string }
@@ -52,6 +56,8 @@ Environment:
   MX_SWAP_ALLOWED_STRATEGIES  Optional comma-separated strategy allowlist (default when executing: xexchange-pair-sequence)
   MX_SWAP_MAX_SLIPPAGE_BPS  Optional maximum allowed suggested slippage
   MX_SWAP_MAX_DEADLINE_SECONDS  Optional maximum allowed suggested deadline
+  MX_REPORT_DIR  Optional directory for writing a JSON audit report
+  MX_REPORT_FILE  Optional exact JSON audit report file path
 
 Examples:
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- token-risk XMEX-abc123
@@ -169,34 +175,50 @@ async function main(): Promise<void> {
     execution instanceof SwapPlanPolicyError
       ? serializeSwapPlanPolicyError(execution)
       : undefined
+  const result = {
+    endpoint: request.kind,
+    receipt,
+    txHash,
+    payload,
+    ...(unsignedTransactions ? { unsignedTransactions } : {}),
+    ...(simulation &&
+    !(simulation instanceof SwapPlanSimulationError) &&
+    !(simulation instanceof SwapPlanPolicyError)
+      ? { simulation }
+      : {}),
+    ...(simulationError ? { simulationError } : {}),
+    ...(simulationPolicyError ? { simulationPolicyError } : {}),
+    ...(execution && !(execution instanceof SwapPlanExecutionError)
+      && !(execution instanceof SwapPlanSimulationError)
+      && !(execution instanceof SwapPlanPolicyError)
+      ? { execution }
+      : {}),
+    ...(executionError ? { executionError } : {}),
+    ...(executionSimulationError ? { executionSimulationError } : {}),
+    ...(executionPolicyError ? { executionPolicyError } : {}),
+  }
+  const auditReport = buildPaidIntelAuditReport({
+    endpoint: request.kind,
+    request: {
+      kind: request.kind,
+      ...request,
+    },
+    sender,
+    facilitatorBaseUrl: baseUrl,
+    receipt,
+    paymentTxHash: txHash,
+    ...(executionPolicy ? { executionPolicy } : {}),
+    result,
+  })
+  const reportPath = await persistPaidIntelAuditReport({
+    report: auditReport,
+    outputDir: process.env.MX_REPORT_DIR,
+    outputFile: process.env.MX_REPORT_FILE,
+  })
+  const output = reportPath ? { ...result, reportPath } : result
 
   console.log(
-    JSON.stringify(
-      {
-        endpoint: request.kind,
-        receipt,
-        txHash,
-        payload,
-        ...(unsignedTransactions ? { unsignedTransactions } : {}),
-        ...(simulation &&
-        !(simulation instanceof SwapPlanSimulationError) &&
-        !(simulation instanceof SwapPlanPolicyError)
-          ? { simulation }
-          : {}),
-        ...(simulationError ? { simulationError } : {}),
-        ...(simulationPolicyError ? { simulationPolicyError } : {}),
-        ...(execution && !(execution instanceof SwapPlanExecutionError)
-          && !(execution instanceof SwapPlanSimulationError)
-          && !(execution instanceof SwapPlanPolicyError)
-          ? { execution }
-          : {}),
-        ...(executionError ? { executionError } : {}),
-        ...(executionSimulationError ? { executionSimulationError } : {}),
-        ...(executionPolicyError ? { executionPolicyError } : {}),
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(output, null, 2),
   )
 
   if (

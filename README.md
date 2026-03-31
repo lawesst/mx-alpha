@@ -29,6 +29,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Pre-broadcast execution policy guards for strategy, action count, contract allowlists, and suggested slippage/deadline checks
 - Dry-run swap simulation before broadcast, including sequential simulated output chaining
 - Richer execution reporting that compares preflight simulation with real execution per action
+- Optional JSON audit export for paid runs, dry-runs, and execution failures
 
 ## What The Product Does
 
@@ -112,6 +113,17 @@ MX_SIMULATE_SWAP_PLAN=true \
 npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 
+Persist an audit report while running the example:
+
+```bash
+cd ../mppx-multiversx
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3000 \
+MX_EXECUTE_SWAP_PLAN=true \
+MX_REPORT_DIR=./reports \
+npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
+
 Run the common verification commands from the repo root:
 
 ```bash
@@ -129,5 +141,6 @@ make check
 - failed dry-runs now raise a structured simulation error with partial preflight state preserved.
 - the SDK can also reject risky or unexpected plans before signing by enforcing an execution policy over strategy, receivers, action types, and suggested route limits.
 - the example runner performs pre-broadcast simulation by default when live execution is enabled, unless `MX_SKIP_PREBROADCAST_SIMULATION=true` is set.
+- the example runner can now persist a JSON audit report with the payment receipt, request metadata, dry-run details, and execution outcome when `MX_REPORT_DIR` or `MX_REPORT_FILE` is set.
 - unwrap templates are built from the guaranteed minimum output, so clients may still want to adjust the final unwrap amount after execution if more WEGLD is received.
 - This repo is intended as a buildable prototype rather than a polished production release.

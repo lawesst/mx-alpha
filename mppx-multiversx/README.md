@@ -123,6 +123,8 @@ For dry-run workflows, the client package also exports `simulateSwapPlan()`. It 
 
 When `executeSwapPlan()` runs with `simulateBeforeBroadcast`, successful results now include the pre-broadcast simulations alongside the final executions. Each execution can carry its matching `preBroadcastSimulation` plus an `outputComparison` payload so callers can inspect how the simulated output differed from the actual on-chain result.
 
+The example client can also persist an audit record of the paid request, payment receipt, dry-run output, and execution result. Set either `MX_REPORT_DIR` or `MX_REPORT_FILE` to write a JSON audit report for later inspection.
+
 For pre-broadcast safety checks, the client package also accepts an `executionPolicy` on `buildTransactionsFromSwapPlan()` and `executeSwapPlan()`. This can enforce limits such as:
 - maximum action count
 - allowed action types
@@ -153,6 +155,16 @@ npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 
 When `MX_EXECUTE_SWAP_PLAN=true`, the example now performs a pre-broadcast dry-run by default. Set `MX_SKIP_PREBROADCAST_SIMULATION=true` if you want to bypass that guard.
+
+To persist the audit trail locally:
+
+```bash
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3100 \
+MX_EXECUTE_SWAP_PLAN=true \
+MX_REPORT_DIR=./reports \
+npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
 
 ## Advanced Verification
 
