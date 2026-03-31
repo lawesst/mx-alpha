@@ -1,4 +1,4 @@
-.PHONY: build-sdk test-sdk test-facilitator check
+.PHONY: build-sdk test-sdk test-facilitator report-index check
 
 build-sdk:
 	cd mppx-multiversx && npm run build
@@ -8,5 +8,8 @@ test-sdk:
 
 test-facilitator:
 	cd mpp-facilitator-mvx && DATABASE_URL=file:./dev.db npx jest intel.service.spec.ts discovery.controller.spec.ts payment-gateway.service.spec.ts --runInBand
+
+report-index:
+	cd mppx-multiversx && npm run example:report-index -- ./reports
 
 check: build-sdk test-sdk test-facilitator

@@ -26,7 +26,8 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
-    "example:paid-intel": "tsx examples/paid-intel.ts"
+    "example:paid-intel": "tsx examples/paid-intel.ts",
+    "example:report-index": "tsx examples/report-index.ts"
   },
   "dependencies": {
     "@multiversx/sdk-core": "^15.4.0",
