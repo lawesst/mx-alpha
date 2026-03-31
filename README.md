@@ -28,6 +28,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Structured failure reporting for partially executed swap plans
 - Pre-broadcast execution policy guards for strategy, action count, contract allowlists, and suggested slippage/deadline checks
 - Dry-run swap simulation before broadcast, including sequential simulated output chaining
+- Richer execution reporting that compares preflight simulation with real execution per action
 
 ## What The Product Does
 
@@ -44,6 +45,8 @@ The SDK and example client show how an agent can pay for those endpoints, turn t
 
 ```text
 mx-alpha/
+  LICENSE
+  Makefile
   mpp-facilitator-mvx/
   mppx-multiversx/
 ```
@@ -56,6 +59,12 @@ Build the SDK first so the facilitator can consume the local package:
 cd mppx-multiversx
 npm install
 npm run build
+```
+
+Or use the root helper:
+
+```bash
+make build-sdk
 ```
 
 Then install and start the facilitator:
@@ -103,12 +112,19 @@ MX_SIMULATE_SWAP_PLAN=true \
 npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 
+Run the common verification commands from the repo root:
+
+```bash
+make check
+```
+
 ## Notes
 
 - `swap-plan` emits pair-hop templates by default and can also emit EGLD wrap/unwrap templates when `MPP_WEGLD_SWAP_ADDRESS` is set.
 - downstream swap hops and final unwrap actions can reference the previous action's output, so clients can either use safe fallback amounts or inject actual outputs at runtime.
 - the SDK can now execute supported swap-plan actions sequentially and reuse the actual completed output of each step when constructing the next one.
 - the SDK can also simulate supported swap-plan actions sequentially, using simulated outputs to dry-run later hops before any broadcast happens.
+- successful executions can now include both the pre-broadcast simulations and per-hop output deltas between simulated and actual results.
 - failed on-chain steps now raise a structured execution error that preserves partial progress and per-step status for debugging or recovery flows.
 - failed dry-runs now raise a structured simulation error with partial preflight state preserved.
 - the SDK can also reject risky or unexpected plans before signing by enforcing an execution policy over strategy, receivers, action types, and suggested route limits.

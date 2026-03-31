@@ -607,12 +607,46 @@ main().catch((error: unknown) => {
 
 function serializeExecutionResult(result: {
   actionOutputs: Record<number, { token?: string; amount: string }>
+  simulations?: Array<{
+    actionIndex: number
+    actionType: string
+    status: string
+    output?: { token?: string; amount: string }
+    failureReason?: string
+    transaction: {
+      receiver: Address
+      gasLimit: bigint
+      value: bigint
+      data: Uint8Array | Buffer
+    }
+  }>
   executions: Array<{
     actionIndex: number
     actionType: string
     txHash: string
     status: string
+    preBroadcastSimulation?: {
+      actionIndex: number
+      actionType: string
+      status: string
+      output?: { token?: string; amount: string }
+      failureReason?: string
+      transaction: {
+        receiver: Address
+        gasLimit: bigint
+        value: bigint
+        data: Uint8Array | Buffer
+      }
+    }
     output?: { token?: string; amount: string }
+    outputComparison?: {
+      simulatedToken?: string
+      actualToken?: string
+      simulatedAmount: string
+      actualAmount: string
+      deltaAmount?: string
+      absoluteDeltaAmount?: string
+    }
     failureReason?: string
     transaction: {
       receiver: Address
@@ -624,12 +658,30 @@ function serializeExecutionResult(result: {
 }) {
   return {
     actionOutputs: result.actionOutputs,
+    ...(result.simulations
+      ? {
+          simulations: serializeSimulationResult({
+            actionOutputs: result.actionOutputs,
+            simulations: result.simulations,
+          }).simulations,
+        }
+      : {}),
     executions: result.executions.map((execution) => ({
       actionIndex: execution.actionIndex,
       actionType: execution.actionType,
       txHash: execution.txHash,
       status: execution.status,
+      ...(execution.preBroadcastSimulation
+        ? {
+            preBroadcastSimulation: serializeSimulationAction(
+              execution.preBroadcastSimulation,
+            ),
+          }
+        : {}),
       ...(execution.output ? { output: execution.output } : {}),
+      ...(execution.outputComparison
+        ? { outputComparison: execution.outputComparison }
+        : {}),
       ...(execution.failureReason ? { failureReason: execution.failureReason } : {}),
       receiver: execution.transaction.receiver.toBech32(),
       gasLimit: execution.transaction.gasLimit.toString(),
@@ -657,19 +709,9 @@ function serializeSimulationResult(result: {
 }) {
   return {
     actionOutputs: result.actionOutputs,
-    simulations: result.simulations.map((simulation) => ({
-      actionIndex: simulation.actionIndex,
-      actionType: simulation.actionType,
-      status: simulation.status,
-      ...(simulation.output ? { output: simulation.output } : {}),
-      ...(simulation.failureReason
-        ? { failureReason: simulation.failureReason }
-        : {}),
-      receiver: simulation.transaction.receiver.toBech32(),
-      gasLimit: simulation.transaction.gasLimit.toString(),
-      value: simulation.transaction.value.toString(),
-      data: Buffer.from(simulation.transaction.data).toString(),
-    })),
+    simulations: result.simulations.map((simulation) =>
+      serializeSimulationAction(simulation),
+    ),
   }
 }
 
@@ -682,7 +724,17 @@ function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
       actionType: error.failedExecution.actionType,
       txHash: error.failedExecution.txHash,
       status: error.failedExecution.status,
+      ...(error.failedExecution.preBroadcastSimulation
+        ? {
+            preBroadcastSimulation: serializeSimulationAction(
+              error.failedExecution.preBroadcastSimulation,
+            ),
+          }
+        : {}),
       ...(error.failedExecution.output ? { output: error.failedExecution.output } : {}),
+      ...(error.failedExecution.outputComparison
+        ? { outputComparison: error.failedExecution.outputComparison }
+        : {}),
       ...(error.failedExecution.failureReason
         ? { failureReason: error.failedExecution.failureReason }
         : {}),
@@ -693,8 +745,17 @@ function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
     },
     executions: serializeExecutionResult({
       actionOutputs: error.actionOutputs,
+      ...(error.simulations ? { simulations: error.simulations } : {}),
       executions: error.executions,
     }).executions,
+    ...(error.simulations
+      ? {
+          simulations: serializeSimulationResult({
+            actionOutputs: error.actionOutputs,
+            simulations: error.simulations,
+          }).simulations,
+        }
+      : {}),
   }
 }
 
@@ -736,6 +797,32 @@ function serializeSwapPlanPolicyError(error: SwapPlanPolicyError) {
       deadlineSecondsSuggested: error.plan.deadlineSecondsSuggested,
       actionCount: error.plan.actions.length,
     },
+  }
+}
+
+function serializeSimulationAction(simulation: {
+  actionIndex: number
+  actionType: string
+  status: string
+  output?: { token?: string; amount: string }
+  failureReason?: string
+  transaction: {
+    receiver: Address
+    gasLimit: bigint
+    value: bigint
+    data: Uint8Array | Buffer
+  }
+}) {
+  return {
+    actionIndex: simulation.actionIndex,
+    actionType: simulation.actionType,
+    status: simulation.status,
+    ...(simulation.output ? { output: simulation.output } : {}),
+    ...(simulation.failureReason ? { failureReason: simulation.failureReason } : {}),
+    receiver: simulation.transaction.receiver.toBech32(),
+    gasLimit: simulation.transaction.gasLimit.toString(),
+    value: simulation.transaction.value.toString(),
+    data: Buffer.from(simulation.transaction.data).toString(),
   }
 }
 

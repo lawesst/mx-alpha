@@ -801,6 +801,167 @@ describe('swap plan transaction construction', () => {
     throw new Error('Expected executeSwapPlan() to throw a SwapPlanSimulationError')
   })
 
+  it('returns pre-broadcast simulations and output comparisons when execution succeeds', async () => {
+    const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
+    const signerAddress = Address.newFromBech32(sender)
+    const sentTransactions: { nonce: bigint; data: string }[] = []
+
+    const result = await executeSwapPlan({
+      signer: {
+        address: signerAddress,
+        sign: async () => new Uint8Array(),
+        signTransaction: async () => new Uint8Array([1, 2, 3]),
+        verifyTransactionSignature: async () => true,
+        signMessage: async () => new Uint8Array(),
+        verifyMessageSignature: async () => true,
+      },
+      provider: {
+        getAccount: async () => ({ nonce: 13n }),
+        sendTransaction: async (transaction) => {
+          sentTransactions.push({
+            nonce: transaction.nonce,
+            data: Buffer.from(transaction.data).toString(),
+          })
+          return `tx-${sentTransactions.length}`
+        },
+        getTransaction: async (txHash) => {
+          if (txHash === 'tx-1') {
+            return new TransactionOnNetwork({
+              hash: txHash,
+              status: new TransactionStatus('success'),
+              smartContractResults: [
+                {
+                  receiver: signerAddress,
+                  raw: {
+                    tokens: ['WEGLD-bd4d79'],
+                    esdtValues: ['2100000000000000000'],
+                  },
+                } as never,
+              ],
+            })
+          }
+
+          return new TransactionOnNetwork({
+            hash: txHash,
+            status: new TransactionStatus('success'),
+            smartContractResults: [
+              {
+                receiver: signerAddress,
+                raw: {
+                  value: '2100000000000000000',
+                },
+              } as never,
+            ],
+          })
+        },
+        simulateTransaction: async (transaction) => {
+          if (transaction.nonce === 13n) {
+            return new TransactionOnNetwork({
+              hash: 'sim-1',
+              status: new TransactionStatus('success'),
+              smartContractResults: [
+                {
+                  receiver: signerAddress,
+                  raw: {
+                    tokens: ['WEGLD-bd4d79'],
+                    esdtValues: ['2000000000000000000'],
+                  },
+                } as never,
+              ],
+            })
+          }
+
+          return new TransactionOnNetwork({
+            hash: 'sim-2',
+            status: new TransactionStatus('success'),
+            smartContractResults: [
+              {
+                receiver: signerAddress,
+                raw: {
+                  value: '2000000000000000000',
+                },
+              } as never,
+            ],
+          })
+        },
+      },
+      plan: {
+        chainId: 'D',
+        strategy: 'xexchange-pair-sequence',
+        actions: [
+          {
+            type: 'wrap-egld',
+            tokenOut: 'WEGLD-bd4d79',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgq4axqc749vuqr27snr8d8qgvlmz44chsr0n4sm4a72g',
+              gasLimit: '10000000',
+              function: 'wrapEgld',
+              nativeTransferAmount: '2000000000000000000',
+              tokenTransfers: [],
+              arguments: [],
+            },
+          },
+          {
+            type: 'unwrap-egld',
+            tokenOut: 'EGLD',
+            transactionTemplate: {
+              kind: 'smart-contract-execute',
+              chainId: 'D',
+              receiver:
+                'erd1qqqqqqqqqqqqqpgq4axqc749vuqr27snr8d8qgvlmz44chsr0n4sm4a72g',
+              gasLimit: '10000000',
+              function: 'unwrapEgld',
+              tokenTransfers: [
+                {
+                  token: 'WEGLD-bd4d79',
+                  nonce: 0,
+                  amountSource: {
+                    kind: 'previous-action-output',
+                    actionIndex: 0,
+                    outputToken: 'WEGLD-bd4d79',
+                    fallbackAmount: '2000000000000000000',
+                  },
+                },
+              ],
+              arguments: [],
+            },
+          },
+        ],
+      },
+      simulateBeforeBroadcast: true,
+    })
+
+    expect(sentTransactions[0].nonce).toBe(13n)
+    expect(sentTransactions[1].nonce).toBe(14n)
+    expect(result.simulations).toHaveLength(2)
+    expect(result.executions[0].preBroadcastSimulation).toMatchObject({
+      status: 'success',
+      output: {
+        token: 'WEGLD-bd4d79',
+        amount: '2000000000000000000',
+      },
+    })
+    expect(result.executions[0].outputComparison).toEqual({
+      simulatedToken: 'WEGLD-bd4d79',
+      actualToken: 'WEGLD-bd4d79',
+      simulatedAmount: '2000000000000000000',
+      actualAmount: '2100000000000000000',
+      deltaAmount: '100000000000000000',
+      absoluteDeltaAmount: '100000000000000000',
+    })
+    expect(result.executions[1].outputComparison).toEqual({
+      simulatedToken: 'EGLD',
+      actualToken: 'EGLD',
+      actualAmount: '2100000000000000000',
+      simulatedAmount: '2000000000000000000',
+      deltaAmount: '100000000000000000',
+      absoluteDeltaAmount: '100000000000000000',
+    })
+  })
+
   it('falls back to embedded amounts when execution outputs are unavailable', async () => {
     const sender = 'erd1spyavw0956vq68xj8y4tenjpq2wd5a9p2c6j8gsz7ztyrnpxrruqzu66jx'
     const signerAddress = Address.newFromBech32(sender)

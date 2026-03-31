@@ -105,6 +105,15 @@ export type SwapPlanActionOutput = {
   amount: string
 }
 
+export type SwapPlanActionOutputComparison = {
+  simulatedToken?: string
+  actualToken?: string
+  simulatedAmount: string
+  actualAmount: string
+  deltaAmount?: string
+  absoluteDeltaAmount?: string
+}
+
 export type SimulatedSwapPlanAction = {
   actionIndex: number
   actionType: string
@@ -122,13 +131,16 @@ export type ExecutedSwapPlanAction = {
   transaction: Transaction
   completedTransaction: TransactionOnNetwork
   status: string
+  preBroadcastSimulation?: SimulatedSwapPlanAction
   output?: SwapPlanActionOutput
+  outputComparison?: SwapPlanActionOutputComparison
   failureReason?: string
 }
 
 export type ExecuteSwapPlanResult = {
   actionOutputs: NonNullable<BuildSwapPlanTransactionsParameters['actionOutputs']>
   executions: ExecutedSwapPlanAction[]
+  simulations?: SimulatedSwapPlanAction[]
 }
 
 export type SimulateSwapPlanParameters = BuildSwapPlanTransactionsParameters & {
@@ -144,11 +156,13 @@ export class SwapPlanExecutionError extends Error {
   readonly actionOutputs: ExecuteSwapPlanResult['actionOutputs']
   readonly executions: ExecutedSwapPlanAction[]
   readonly failedExecution: ExecutedSwapPlanAction
+  readonly simulations?: SimulatedSwapPlanAction[]
 
   constructor(parameters: {
     actionOutputs: ExecuteSwapPlanResult['actionOutputs']
     executions: ExecutedSwapPlanAction[]
     failedExecution: ExecutedSwapPlanAction
+    simulations?: SimulatedSwapPlanAction[]
   }) {
     const status = parameters.failedExecution.status
     const failureReason = parameters.failedExecution.failureReason
@@ -163,6 +177,9 @@ export class SwapPlanExecutionError extends Error {
     this.actionOutputs = parameters.actionOutputs
     this.executions = parameters.executions
     this.failedExecution = parameters.failedExecution
+    if (parameters.simulations) {
+      this.simulations = parameters.simulations
+    }
   }
 }
 
@@ -565,8 +582,10 @@ export async function executeSwapPlan(
 
     transaction.nonce = nextNonce
 
+    let preBroadcastSimulation: SimulatedSwapPlanAction | undefined
+
     if (simulationProvider) {
-      const simulation = await simulateSwapPlanAction({
+      preBroadcastSimulation = await simulateSwapPlanAction({
         provider: simulationProvider,
         action,
         actionIndex,
@@ -574,13 +593,13 @@ export async function executeSwapPlan(
         transaction,
       })
 
-      simulations.push(simulation)
+      simulations.push(preBroadcastSimulation)
 
-      if (!simulation.simulatedTransaction.status.isSuccessful()) {
+      if (!preBroadcastSimulation.simulatedTransaction.status.isSuccessful()) {
         throw new SwapPlanSimulationError({
           actionOutputs,
           simulations: [...simulations],
-          failedSimulation: simulation,
+          failedSimulation: preBroadcastSimulation,
         })
       }
     }
@@ -610,6 +629,9 @@ export async function executeSwapPlan(
         transaction,
         completedTransaction,
         status,
+        ...(preBroadcastSimulation
+          ? { preBroadcastSimulation }
+          : {}),
         ...(failureReason ? { failureReason } : {}),
       }
 
@@ -619,6 +641,7 @@ export async function executeSwapPlan(
         actionOutputs,
         executions: [...executions],
         failedExecution,
+        ...(simulations.length > 0 ? { simulations: [...simulations] } : {}),
       })
     }
 
@@ -639,7 +662,18 @@ export async function executeSwapPlan(
       transaction,
       completedTransaction,
       status,
+      ...(preBroadcastSimulation
+        ? { preBroadcastSimulation }
+        : {}),
       ...(output ? { output } : {}),
+      ...(preBroadcastSimulation?.output && output
+        ? {
+            outputComparison: compareActionOutputs(
+              preBroadcastSimulation.output,
+              output,
+            ),
+          }
+        : {}),
     })
 
     nextNonce += 1n
@@ -648,6 +682,7 @@ export async function executeSwapPlan(
   return {
     actionOutputs,
     executions,
+    ...(simulations.length > 0 ? { simulations } : {}),
   }
 }
 
@@ -827,6 +862,40 @@ function extractActionOutput(parameters: {
   }
 
   return outputs[outputs.length - 1]
+}
+
+function compareActionOutputs(
+  simulatedOutput: SwapPlanActionOutput,
+  actualOutput: SwapPlanActionOutput,
+): SwapPlanActionOutputComparison {
+  const simulatedToken = simulatedOutput.token
+  const actualToken = actualOutput.token
+  const canCompareDelta =
+    !simulatedToken || !actualToken || simulatedToken === actualToken
+
+  if (!canCompareDelta) {
+    return {
+      ...(simulatedToken ? { simulatedToken } : {}),
+      ...(actualToken ? { actualToken } : {}),
+      simulatedAmount: simulatedOutput.amount,
+      actualAmount: actualOutput.amount,
+    }
+  }
+
+  const deltaAmount = (
+    BigInt(actualOutput.amount) - BigInt(simulatedOutput.amount)
+  ).toString()
+
+  return {
+    ...(simulatedToken ? { simulatedToken } : {}),
+    ...(actualToken ? { actualToken } : {}),
+    simulatedAmount: simulatedOutput.amount,
+    actualAmount: actualOutput.amount,
+    deltaAmount,
+    absoluteDeltaAmount: deltaAmount.startsWith('-')
+      ? deltaAmount.slice(1)
+      : deltaAmount,
+  }
 }
 
 function extractResultTransfers(raw: Record<string, unknown>): SwapPlanActionOutput[] {

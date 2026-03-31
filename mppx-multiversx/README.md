@@ -121,6 +121,8 @@ If any on-chain step completes with a failed status, `executeSwapPlan()` now thr
 
 For dry-run workflows, the client package also exports `simulateSwapPlan()`. It builds the same action sequence, assigns sequential nonces, runs each transaction through `simulateTransaction()`, and carries simulated outputs forward to later actions. Failed dry-runs throw `SwapPlanSimulationError` with partial simulation state preserved.
 
+When `executeSwapPlan()` runs with `simulateBeforeBroadcast`, successful results now include the pre-broadcast simulations alongside the final executions. Each execution can carry its matching `preBroadcastSimulation` plus an `outputComparison` payload so callers can inspect how the simulated output differed from the actual on-chain result.
+
 For pre-broadcast safety checks, the client package also accepts an `executionPolicy` on `buildTransactionsFromSwapPlan()` and `executeSwapPlan()`. This can enforce limits such as:
 - maximum action count
 - allowed action types

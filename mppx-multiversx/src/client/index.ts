@@ -16,6 +16,7 @@ export type {
   ExecuteSwapPlanResult,
   SimulateSwapPlanResult,
   SimulatedSwapPlanAction,
+  SwapPlanActionOutputComparison,
   SwapExecutionPlan,
   SwapPlanExecutionPolicy,
   SwapPlanActionOutput,
