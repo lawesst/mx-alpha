@@ -30,7 +30,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Dry-run swap simulation before broadcast, including sequential simulated output chaining
 - Richer execution reporting that compares preflight simulation with real execution per action
 - Optional JSON audit export for paid runs, dry-runs, and execution failures
-- Report indexing that summarizes many saved audit runs into JSON and Markdown artifacts
+- Report indexing that summarizes many saved audit runs into JSON, Markdown, and static HTML artifacts
 
 ## What The Product Does
 
@@ -157,5 +157,6 @@ make report-index
 - the example runner performs pre-broadcast simulation by default when live execution is enabled, unless `MX_SKIP_PREBROADCAST_SIMULATION=true` is set.
 - the example runner can now persist a JSON audit report with the payment receipt, request metadata, dry-run details, and execution outcome when `MX_REPORT_DIR` or `MX_REPORT_FILE` is set.
 - the repo now includes a small indexer that scans saved reports and writes `index.json`, `latest-success.json`, and `summary.md` so repeated runs are easier to review.
+- the report indexer now also writes a static `index.html` dashboard for quick browser-based review.
 - unwrap templates are built from the guaranteed minimum output, so clients may still want to adjust the final unwrap amount after execution if more WEGLD is received.
 - This repo is intended as a buildable prototype rather than a polished production release.

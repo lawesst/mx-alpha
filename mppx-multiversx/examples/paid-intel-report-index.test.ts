@@ -8,6 +8,7 @@ import {
   buildPaidIntelAuditReportIndex,
   collectPaidIntelAuditReports,
   persistPaidIntelAuditIndexArtifacts,
+  renderPaidIntelAuditDashboardHtml,
   renderPaidIntelAuditSummaryMarkdown,
 } from './paid-intel-report-index.ts'
 
@@ -239,8 +240,11 @@ describe('paid intel audit report indexing', () => {
     })
 
     const markdown = renderPaidIntelAuditSummaryMarkdown(index)
+    const dashboardHtml = renderPaidIntelAuditDashboardHtml(index)
     expect(markdown).toContain('# Paid Intel Audit Summary')
     expect(markdown).toContain('### wallet-profile')
+    expect(dashboardHtml).toContain('<title>mx-alpha Audit Dashboard</title>')
+    expect(dashboardHtml).toContain('wallet-profile')
 
     const artifacts = await persistPaidIntelAuditIndexArtifacts({
       index,
@@ -252,9 +256,11 @@ describe('paid intel audit report indexing', () => {
       await readFile(artifacts.latestSuccessPath, 'utf8'),
     )
     const summaryMarkdown = await readFile(artifacts.summaryPath, 'utf8')
+    const persistedDashboardHtml = await readFile(artifacts.dashboardPath, 'utf8')
 
     expect(indexJson.totals.reports).toBe(1)
     expect(Object.keys(latestSuccessJson)).toEqual(['wallet-profile'])
     expect(summaryMarkdown).toContain('wallet-profile')
+    expect(persistedDashboardHtml).toContain('Paid Intel Audit Dashboard')
   })
 })
