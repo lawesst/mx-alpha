@@ -125,6 +125,8 @@ When `executeSwapPlan()` runs with `simulateBeforeBroadcast`, successful results
 
 The example client can also persist an audit record of the paid request, payment receipt, dry-run output, and execution result. Set either `MX_REPORT_DIR` or `MX_REPORT_FILE` to write a JSON audit report for later inspection.
 
+If you want the same run to send that audit record back to the facilitator, set `MX_UPLOAD_AUDIT_REPORT=true`. By default the example posts to `${MX_INTEL_BASE_URL}/audit-reports`, and you can override that exact target with `MX_AUDIT_REPORT_URL`.
+
 The repository also includes `example:report-index`, which scans a directory of saved audit reports, validates them, and writes summary artifacts such as `index.json`, `latest-success.json`, `summary.md`, and a static `index.html` dashboard.
 
 For pre-broadcast safety checks, the client package also accepts an `executionPolicy` on `buildTransactionsFromSwapPlan()` and `executeSwapPlan()`. This can enforce limits such as:
@@ -165,6 +167,17 @@ MX_PEM_PATH=./wallet.pem \
 MX_INTEL_BASE_URL=http://localhost:3100 \
 MX_EXECUTE_SWAP_PLAN=true \
 MX_REPORT_DIR=./reports \
+npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
+
+To persist and upload the audit trail in one run:
+
+```bash
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3100 \
+MX_EXECUTE_SWAP_PLAN=true \
+MX_REPORT_DIR=./reports \
+MX_UPLOAD_AUDIT_REPORT=true \
 npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 

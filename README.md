@@ -30,6 +30,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Dry-run swap simulation before broadcast, including sequential simulated output chaining
 - Richer execution reporting that compares preflight simulation with real execution per action
 - Optional JSON audit export for paid runs, dry-runs, and execution failures
+- Optional one-step audit upload from the example client back into the facilitator
 - Report indexing that summarizes many saved audit runs into JSON, Markdown, and static HTML artifacts
 - Facilitator-side audit ingestion with list, detail, and summary APIs for stored paid-run reports
 
@@ -123,6 +124,18 @@ MX_PEM_PATH=./wallet.pem \
 MX_INTEL_BASE_URL=http://localhost:3000 \
 MX_EXECUTE_SWAP_PLAN=true \
 MX_REPORT_DIR=./reports \
+npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
+
+Persist and upload the same audit report back into the facilitator:
+
+```bash
+cd ../mppx-multiversx
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3000 \
+MX_EXECUTE_SWAP_PLAN=true \
+MX_REPORT_DIR=./reports \
+MX_UPLOAD_AUDIT_REPORT=true \
 npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 

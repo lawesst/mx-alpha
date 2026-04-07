@@ -1,11 +1,12 @@
 import { mkdtemp, readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   buildPaidIntelAuditReport,
   createPaidIntelAuditFilename,
   persistPaidIntelAuditReport,
+  uploadPaidIntelAuditReport,
 } from './paid-intel-report.ts'
 
 describe('paid intel audit reporting', () => {
@@ -131,5 +132,112 @@ describe('paid intel audit reporting', () => {
 
     const writtenContent = await readFile(reportPath!, 'utf8')
     expect(JSON.parse(writtenContent)).toEqual(report)
+  })
+
+  it('uploads the audit report to the facilitator audit endpoint', async () => {
+    const report = buildPaidIntelAuditReport({
+      endpoint: 'wallet-profile',
+      request: {
+        kind: 'wallet-profile',
+        address: 'erd1wallet',
+      },
+      sender: 'erd1sender',
+      facilitatorBaseUrl: 'http://localhost:3000',
+      receipt: 'receipt-value',
+      paymentTxHash: 'payment-tx-hash',
+      result: {
+        endpoint: 'wallet-profile',
+        payload: {
+          label: 'example',
+        },
+      },
+      generatedAt: '2026-03-31T10:00:00.000Z',
+    })
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'report-123',
+          endpoint: 'wallet-profile',
+          status: 'success',
+          generatedAt: '2026-03-31T10:00:00.000Z',
+          paymentTxHash: 'payment-tx-hash',
+          hasReceipt: true,
+          errorKinds: [],
+          sender: 'erd1sender',
+          facilitatorBaseUrl: 'http://localhost:3000',
+          createdAt: '2026-03-31T10:00:01.000Z',
+          updatedAt: '2026-03-31T10:00:01.000Z',
+        }),
+        {
+          status: 201,
+          headers: {
+            'content-type': 'application/json',
+          },
+        },
+      ),
+    )
+
+    const uploaded = await uploadPaidIntelAuditReport({
+      report,
+      baseUrl: 'http://localhost:3000',
+      fetchImpl,
+    })
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://localhost:3000/audit-reports',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+      }),
+    )
+    expect(uploaded).toEqual({
+      id: 'report-123',
+      endpoint: 'wallet-profile',
+      status: 'success',
+      generatedAt: '2026-03-31T10:00:00.000Z',
+      paymentTxHash: 'payment-tx-hash',
+      hasReceipt: true,
+      errorKinds: [],
+      sender: 'erd1sender',
+      facilitatorBaseUrl: 'http://localhost:3000',
+      createdAt: '2026-03-31T10:00:01.000Z',
+      updatedAt: '2026-03-31T10:00:01.000Z',
+    })
+  })
+
+  it('throws when audit report upload fails', async () => {
+    const report = buildPaidIntelAuditReport({
+      endpoint: 'swap-plan',
+      request: {
+        kind: 'swap-plan',
+      },
+      sender: 'erd1sender',
+      facilitatorBaseUrl: 'http://localhost:3000',
+      receipt: null,
+      paymentTxHash: 'payment-tx-hash',
+      result: {
+        executionError: {
+          message: 'something failed',
+        },
+      },
+      generatedAt: '2026-03-31T10:00:00.000Z',
+    })
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response('bad request', { status: 400 }),
+    )
+
+    await expect(
+      uploadPaidIntelAuditReport({
+        report,
+        uploadUrl: 'http://localhost:3000/audit-reports',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(
+      'Audit report upload failed with status 400: bad request',
+    )
   })
 })

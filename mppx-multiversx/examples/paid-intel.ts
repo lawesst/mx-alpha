@@ -25,6 +25,7 @@ import type {
 import {
   buildPaidIntelAuditReport,
   persistPaidIntelAuditReport,
+  uploadPaidIntelAuditReport,
 } from './paid-intel-report.ts'
 
 type ExampleRequest =
@@ -58,6 +59,8 @@ Environment:
   MX_SWAP_MAX_DEADLINE_SECONDS  Optional maximum allowed suggested deadline
   MX_REPORT_DIR  Optional directory for writing a JSON audit report
   MX_REPORT_FILE  Optional exact JSON audit report file path
+  MX_UPLOAD_AUDIT_REPORT  Set to "true" to POST the generated audit report to the facilitator
+  MX_AUDIT_REPORT_URL  Optional exact upload URL for the facilitator audit endpoint
 
 Examples:
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- token-risk XMEX-abc123
@@ -215,7 +218,18 @@ async function main(): Promise<void> {
     outputDir: process.env.MX_REPORT_DIR,
     outputFile: process.env.MX_REPORT_FILE,
   })
-  const output = reportPath ? { ...result, reportPath } : result
+  const { uploadedReport, uploadError } = shouldUploadAuditReport()
+    ? await uploadAuditReport({
+        auditReport,
+        baseUrl,
+      })
+    : { uploadedReport: undefined, uploadError: undefined }
+  const output = {
+    ...result,
+    ...(reportPath ? { reportPath } : {}),
+    ...(uploadedReport ? { uploadedReport } : {}),
+    ...(uploadError ? { uploadError } : {}),
+  }
 
   console.log(
     JSON.stringify(output, null, 2),
@@ -226,7 +240,8 @@ async function main(): Promise<void> {
     simulationPolicyError ||
     executionError ||
     executionSimulationError ||
-    executionPolicyError
+    executionPolicyError ||
+    uploadError
   ) {
     process.exitCode = 1
   }
@@ -872,4 +887,31 @@ function parseOptionalInteger(value: string | undefined): number | undefined {
   }
 
   return parsed
+}
+
+async function uploadAuditReport(parameters: {
+  auditReport: ReturnType<typeof buildPaidIntelAuditReport>
+  baseUrl: string
+}): Promise<{
+  uploadedReport?: Awaited<ReturnType<typeof uploadPaidIntelAuditReport>>
+  uploadError?: { message: string }
+}> {
+  try {
+    const uploadedReport = await uploadPaidIntelAuditReport({
+      report: parameters.auditReport,
+      baseUrl: parameters.baseUrl,
+      uploadUrl: process.env.MX_AUDIT_REPORT_URL,
+    })
+    return { uploadedReport }
+  } catch (error) {
+    return {
+      uploadError: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    }
+  }
+}
+
+function shouldUploadAuditReport(): boolean {
+  return process.env.MX_UPLOAD_AUDIT_REPORT === 'true'
 }
