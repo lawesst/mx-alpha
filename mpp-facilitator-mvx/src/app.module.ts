@@ -12,6 +12,8 @@ import { SessionController } from './session.controller';
 import { PaymentGatewayService } from './payment-gateway.service';
 import { IntelController } from './intel.controller';
 import { IntelService } from './intel.service';
+import { AuditReportsController } from './audit-reports.controller';
+import { AuditReportsService } from './audit-reports.service';
 
 @Module({
   imports: [],
@@ -20,6 +22,7 @@ import { IntelService } from './intel.service';
     DiscoveryController,
     SessionController,
     IntelController,
+    AuditReportsController,
   ],
   providers: [
     AppService,
@@ -31,6 +34,7 @@ import { IntelService } from './intel.service';
     SessionService,
     PaymentGatewayService,
     IntelService,
+    AuditReportsService,
   ],
 })
 export class AppModule {}

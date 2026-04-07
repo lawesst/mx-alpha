@@ -31,6 +31,7 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Richer execution reporting that compares preflight simulation with real execution per action
 - Optional JSON audit export for paid runs, dry-runs, and execution failures
 - Report indexing that summarizes many saved audit runs into JSON, Markdown, and static HTML artifacts
+- Facilitator-side audit ingestion with list, detail, and summary APIs for stored paid-run reports
 
 ## What The Product Does
 
@@ -142,6 +143,16 @@ Or build a report index from the repo root:
 
 ```bash
 make report-index
+```
+
+Ingest a saved audit report into the facilitator:
+
+```bash
+curl \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  --data @mppx-multiversx/reports/example-report.json \
+  http://localhost:3000/audit-reports
 ```
 
 ## Notes

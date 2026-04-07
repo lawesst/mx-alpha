@@ -38,3 +38,26 @@ model SettlementRecord {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
+
+model AuditReport {
+  id                  String   @id @default(cuid())
+  schemaVersion       Int
+  kind                String
+  status              String
+  endpoint            String
+  generatedAt         DateTime
+  sender              String
+  facilitatorBaseUrl  String
+  receipt             String?
+  paymentTxHash       String?
+  errorKinds          String   @default("[]")
+  requestJson         String
+  executionPolicyJson String?
+  resultJson          String
+  reportJson          String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([endpoint, generatedAt])
+  @@index([status, generatedAt])
+}

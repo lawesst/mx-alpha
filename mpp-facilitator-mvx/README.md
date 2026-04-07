@@ -13,6 +13,7 @@ A high-performance facilitator microservice for the **Mobile Payment Protocol (M
 - **Execution Planning**: `swap-plan` returns an execution-oriented action list with pair addresses, min-output targets, and slippage suggestions for fixed-input swaps.
 - **Transaction Templates**: `swap-plan` now embeds smart-contract execute templates for supported pair hops, plus optional EGLD wrap/unwrap templates when a WEGLD swap contract address is configured.
 - **Dynamic Chaining**: downstream swap hops and unwrap steps can reference the previous action's output amount instead of hardcoding only one estimated value.
+- **Audit Ingestion**: Stores paid intel audit reports from the example client and exposes list, detail, and summary endpoints for operators or agents.
 - **Security**: HMAC-SHA256 bound challenge IDs, rate limiting, and TTL-based challenge expiration.
 - **Production Ready**: Full test coverage and environment-driven configuration.
 
@@ -46,8 +47,14 @@ The service automatically serves payment metadata via:
 - `GET /intel/wallet-profile?address=<bech32>`
 - `GET /intel/swap-sim?from=<asset>&to=<asset>&amount=<decimal>`
 - `GET /intel/swap-plan?from=<asset>&to=<asset>&amount=<decimal>`
+- `POST /audit-reports`
+- `GET /audit-reports?endpoint=<name>&status=<success|error>&limit=<n>`
+- `GET /audit-reports/summary`
+- `GET /audit-reports/<id>`
 
 This file is used by AI agents to understand how to pay for services using MPP.
+
+The audit report endpoints are useful after running the example client with `MX_REPORT_DIR` or `MX_REPORT_FILE` in [`mppx-multiversx`](../mppx-multiversx). They let you ingest those JSON artifacts into the facilitator and query the latest outcomes centrally.
 
 ## Local Devnet Smoke Test
 

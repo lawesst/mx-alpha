@@ -715,6 +715,131 @@ export class DiscoveryController {
             },
           },
         },
+        '/audit-reports': {
+          get: {
+            operationId: 'listAuditReports',
+            summary: 'List ingested paid intel audit reports',
+            description:
+              'Returns recent ingested paid intel audit reports with optional endpoint and status filters.',
+            parameters: [
+              {
+                name: 'endpoint',
+                in: 'query',
+                required: false,
+                schema: { type: 'string' },
+                description: 'Filter reports by endpoint name',
+              },
+              {
+                name: 'status',
+                in: 'query',
+                required: false,
+                schema: { type: 'string', enum: ['success', 'error'] },
+                description: 'Filter reports by execution status',
+              },
+              {
+                name: 'limit',
+                in: 'query',
+                required: false,
+                schema: { type: 'integer', minimum: 1, maximum: 100 },
+                description: 'Maximum number of reports to return',
+              },
+            ],
+            responses: {
+              '200': {
+                description: 'Stored paid intel audit report list',
+                content: {
+                  'application/json': {
+                    schema: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+          post: {
+            operationId: 'ingestAuditReport',
+            summary: 'Ingest a paid intel audit report',
+            description:
+              'Stores a JSON audit report emitted by the mx-alpha paid intel client for later review and summarization.',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: { type: 'object' },
+                },
+              },
+            },
+            responses: {
+              '201': {
+                description: 'Stored audit report summary',
+                content: {
+                  'application/json': {
+                    schema: { type: 'object' },
+                  },
+                },
+              },
+              '400': {
+                description: 'Invalid audit report payload',
+              },
+            },
+          },
+        },
+        '/audit-reports/summary': {
+          get: {
+            operationId: 'getAuditReportSummary',
+            summary: 'Summarize ingested paid intel audit reports',
+            description:
+              'Returns aggregate counts, latest report pointers, and error kind breakdowns for ingested paid intel audit reports.',
+            parameters: [
+              {
+                name: 'endpoint',
+                in: 'query',
+                required: false,
+                schema: { type: 'string' },
+                description: 'Optionally scope the summary to a single endpoint',
+              },
+            ],
+            responses: {
+              '200': {
+                description: 'Stored paid intel audit report summary',
+                content: {
+                  'application/json': {
+                    schema: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '/audit-reports/{id}': {
+          get: {
+            operationId: 'getAuditReport',
+            summary: 'Fetch one ingested paid intel audit report',
+            description:
+              'Returns the stored audit report payload and metadata for a specific report id.',
+            parameters: [
+              {
+                name: 'id',
+                in: 'path',
+                required: true,
+                schema: { type: 'string' },
+                description: 'Stored audit report identifier',
+              },
+            ],
+            responses: {
+              '200': {
+                description: 'Stored audit report detail',
+                content: {
+                  'application/json': {
+                    schema: { type: 'object' },
+                  },
+                },
+              },
+              '404': {
+                description: 'Audit report not found',
+              },
+            },
+          },
+        },
       },
       components: {
         securitySchemes: {

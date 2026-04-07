@@ -191,5 +191,8 @@ describe('DiscoveryController', () => {
     expect(responseBody.paths['/intel/wallet-profile']).toBeDefined();
     expect(responseBody.paths['/intel/swap-sim']).toBeDefined();
     expect(responseBody.paths['/intel/swap-plan']).toBeDefined();
+    expect(responseBody.paths['/audit-reports']).toBeDefined();
+    expect(responseBody.paths['/audit-reports/summary']).toBeDefined();
+    expect(responseBody.paths['/audit-reports/{id}']).toBeDefined();
   });
 });
