@@ -6,6 +6,7 @@ import {
   Get,
   Post,
   Body,
+  Param,
   Req,
   Res,
   HttpException,
@@ -322,5 +323,15 @@ export class AppController {
       source: body.source || null,
     });
     return { success: true, challengeId: body.id };
+  }
+
+  @Get('challenges/:id')
+  async getChallenge(@Param('id') id: string) {
+    const challenge = await this.storageService.get(id);
+    if (!challenge) {
+      throw new HttpException('Challenge not found', HttpStatus.NOT_FOUND);
+    }
+
+    return challenge;
   }
 }

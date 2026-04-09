@@ -15,6 +15,7 @@ interface ITransaction {
   status:
     | string
     | {
+        status?: string;
         isSuccessful(): boolean;
         isPending(): boolean;
         isFailed(): boolean;
@@ -163,15 +164,50 @@ export class VerifierService {
     try {
       // 1. Idempotency Check
       const existing = await this.storageService.get(challengeId);
+      const failVerification = async (parameters: {
+        error: string;
+        verificationStatus: string;
+        observedTxStatus?: string;
+      }): Promise<{ success: false; error: string }> => {
+        if (existing) {
+          await this.storageService.recordVerificationAttempt(existing.id, {
+            attemptedTxHash: txHash,
+            observedTxStatus: parameters.observedTxStatus,
+            verificationStatus: parameters.verificationStatus,
+            verificationError: parameters.error,
+          });
+        }
+
+        return {
+          success: false,
+          error: parameters.error,
+        };
+      };
+
+      const succeedVerification = async (
+        verificationStatus: string,
+        observedTxStatus: string,
+      ): Promise<{ success: true }> => {
+        await this.storageService.recordVerificationAttempt(challengeId, {
+          attemptedTxHash: txHash,
+          observedTxStatus,
+          verificationStatus,
+          verificationError: null,
+        });
+
+        return { success: true };
+      };
+
       if (existing && existing.status === 'completed') {
         if (existing.txHash === txHash) {
           this.logger.log(`Idempotency hit: cached success for ${challengeId}`);
-          return { success: true };
+          return succeedVerification('cached-success', 'completed');
         }
-        return {
-          success: false,
+        return failVerification({
           error: 'Challenge already settled with a different transaction',
-        };
+          verificationStatus: 'completed-mismatch',
+          observedTxStatus: 'completed',
+        });
       }
 
       if (!existing || existing.status === 'failed') {
@@ -186,33 +222,40 @@ export class VerifierService {
       if (existing.opaque) {
         const receivedOpaqueStr = opaque ? this.stableStringify(opaque) : undefined;
         if (existing.opaque !== receivedOpaqueStr) {
-          return {
-            success: false,
+          return failVerification({
             error: `Opaque mismatch: expected ${existing.opaque}, got ${receivedOpaqueStr}`,
-          };
+            verificationStatus: 'opaque-mismatch',
+            observedTxStatus: 'challenge-metadata-mismatch',
+          });
         }
       }
 
       // Digest validation: bound to request body (RFC 9530)
       if (existing.digest && existing.digest !== digest) {
-        return {
-          success: false,
+        return failVerification({
           error: `Digest mismatch: expected ${existing.digest}, got ${digest}`,
-        };
+          verificationStatus: 'digest-mismatch',
+          observedTxStatus: 'challenge-metadata-mismatch',
+        });
       }
 
       // Source validation: payer identifier (DID format)
       if (existing.source && existing.source !== source) {
-        return {
-          success: false,
+        return failVerification({
           error: `Source mismatch: expected ${existing.source}, got ${source}`,
-        };
+          verificationStatus: 'source-mismatch',
+          observedTxStatus: 'challenge-metadata-mismatch',
+        });
       }
 
       // 3. Challenge Expiry Check
       if (existing.expiresAt && new Date(existing.expiresAt) < new Date()) {
         await this.storageService.updateStatus(challengeId, 'failed');
-        return { success: false, error: 'Challenge has expired' };
+        return failVerification({
+          error: 'Challenge has expired',
+          verificationStatus: 'challenge-expired',
+          observedTxStatus: 'expired',
+        });
       }
 
       // 4. Fetch Transaction from Blockchain
@@ -221,26 +264,35 @@ export class VerifierService {
         const txData = await this.provider.getTransaction(txHash);
         tx = txData as unknown as ITransaction;
       } catch {
-        return {
-          success: false,
+        return failVerification({
           error: 'Transaction not found on the network',
-        };
+          verificationStatus: 'tx-not-found',
+          observedTxStatus: 'not-found',
+        });
       }
 
       // 5. Status Verification
+      const observedTxStatus = this.getObservedTxStatus(tx.status);
       if (!this.isSuccessfulStatus(tx.status)) {
         const errorMsg = this.isPendingStatus(tx.status)
           ? 'Transaction is still pending'
           : 'Transaction failed or is invalid';
-        return { success: false, error: errorMsg };
+        return failVerification({
+          error: errorMsg,
+          verificationStatus: this.isPendingStatus(tx.status)
+            ? 'tx-pending'
+            : 'tx-not-successful',
+          observedTxStatus,
+        });
       }
 
       // 6. Sender Verification
       if (this.asBech32(tx.sender) !== expectedSender) {
-        return {
-          success: false,
+        return failVerification({
           error: 'Transaction sender does not match expected sender',
-        };
+          verificationStatus: 'sender-mismatch',
+          observedTxStatus,
+        });
       }
 
       // 7. Amount & Receiver Verification (EGLD vs ESDT)
@@ -257,25 +309,28 @@ export class VerifierService {
         if (esdtData) {
           // Single ESDT Transfer
           if (esdtData.token !== expectedCurrency) {
-            return {
-              success: false,
+            return failVerification({
               error: `Token mismatch: expected ${expectedCurrency}, got ${esdtData.token}`,
-            };
+              verificationStatus: 'token-mismatch',
+              observedTxStatus,
+            });
           }
           if (esdtData.amount !== expectedAmount) {
-            return {
-              success: false,
+            return failVerification({
               error: `Amount mismatch: expected ${expectedAmount}, got ${esdtData.amount}`,
-            };
+              verificationStatus: 'amount-mismatch',
+              observedTxStatus,
+            });
           }
           if (
             existing.receiver &&
             this.asBech32(tx.receiver) !== existing.receiver
           ) {
-            return {
-              success: false,
+            return failVerification({
               error: `Receiver mismatch: expected ${existing.receiver}, got ${this.asBech32(tx.receiver)}`,
-            };
+              verificationStatus: 'receiver-mismatch',
+              observedTxStatus,
+            });
           }
         } else if (multiEsdtData) {
           // Multi ESDT Transfer - scan all transfers
@@ -283,42 +338,47 @@ export class VerifierService {
             (t) => t.token === expectedCurrency && t.amount === expectedAmount,
           );
           if (!hasMatch) {
-            return {
-              success: false,
+            return failVerification({
               error: `No transfer matches expected token ${expectedCurrency} and amount ${expectedAmount}`,
-            };
+              verificationStatus: 'expected-transfer-not-found',
+              observedTxStatus,
+            });
           }
           if (
             existing.receiver &&
             multiEsdtData.receiver !== existing.receiver
           ) {
-            return {
-              success: false,
+            return failVerification({
               error: `Receiver mismatch: expected ${existing.receiver}, got ${multiEsdtData.receiver}`,
-            };
+              verificationStatus: 'receiver-mismatch',
+              observedTxStatus,
+            });
           }
         } else {
-          return {
-            success: false,
+          return failVerification({
             error:
               'Expected ESDT transfer but data payload format is unrecognized',
-          };
+            verificationStatus: 'unparseable-esdt-transfer',
+            observedTxStatus,
+          });
         }
       } else {
         // EGLD: verify value and receiver directly
         const txValue = tx.value?.toString() || '0';
         if (txValue !== expectedAmount) {
-          return {
-            success: false,
+          return failVerification({
             error: `Amount mismatch: expected ${expectedAmount}, got ${txValue}`,
-          };
+            verificationStatus: 'amount-mismatch',
+            observedTxStatus,
+          });
         }
 
         if (existing.receiver && this.asBech32(tx.receiver) !== existing.receiver) {
-          return {
-            success: false,
+          return failVerification({
             error: 'Receiver does not match expected address',
-          };
+            verificationStatus: 'receiver-mismatch',
+            observedTxStatus,
+          });
         }
       }
 
@@ -339,10 +399,11 @@ export class VerifierService {
       }
 
       if (!dataMatches) {
-        return {
-          success: false,
+        return failVerification({
           error: 'Data payload does not contain the required challenge ID tag',
-        };
+          verificationStatus: 'challenge-tag-missing',
+          observedTxStatus,
+        });
       }
 
       // 9. Mark as completed
@@ -351,9 +412,19 @@ export class VerifierService {
         `Transaction ${txHash} verified successfully for challenge ${challengeId}`,
       );
 
-      return { success: true };
+      return succeedVerification('success', observedTxStatus);
     } catch (error) {
       this.logger.error(`Error verifying transaction: ${error}`);
+      const existing = await this.storageService.get(challengeId);
+      if (existing) {
+        await this.storageService.recordVerificationAttempt(existing.id, {
+          attemptedTxHash: txHash,
+          observedTxStatus: 'exception',
+          verificationStatus: 'verification-exception',
+          verificationError:
+            error instanceof Error ? error.message : String(error),
+        });
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
@@ -366,19 +437,55 @@ export class VerifierService {
   }
 
   private isSuccessfulStatus(status: ITransaction['status']): boolean {
-    if (typeof status === 'string') {
-      return status.toLowerCase() === 'success';
-    }
-
-    return status.isSuccessful();
+    return this.getObservedTxStatus(status) === 'success';
   }
 
   private isPendingStatus(status: ITransaction['status']): boolean {
+    return this.getObservedTxStatus(status) === 'pending';
+  }
+
+  private getObservedTxStatus(status: ITransaction['status']): string {
     if (typeof status === 'string') {
-      return status.toLowerCase() === 'pending';
+      return status.toLowerCase();
     }
 
-    return status.isPending();
+    if (typeof status.status === 'string' && status.status.trim().length > 0) {
+      return status.status.toLowerCase();
+    }
+
+    if (this.readStatusFlag(status, 'isSuccessful')) {
+      return 'success';
+    }
+
+    if (this.readStatusFlag(status, 'isPending')) {
+      return 'pending';
+    }
+
+    if (this.readStatusFlag(status, 'isInvalid')) {
+      return 'invalid';
+    }
+
+    if (this.readStatusFlag(status, 'isFailed')) {
+      return 'fail';
+    }
+
+    return 'unknown';
+  }
+
+  private readStatusFlag(
+    status: Exclude<ITransaction['status'], string>,
+    key: 'isSuccessful' | 'isPending' | 'isFailed' | 'isInvalid',
+  ): boolean {
+    const candidate = status[key];
+    if (typeof candidate !== 'function') {
+      return false;
+    }
+
+    try {
+      return Boolean(candidate.call(status));
+    } catch {
+      return false;
+    }
   }
 
   private asBech32(value: string | IAddress | IAddressValue): string {

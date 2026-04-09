@@ -94,6 +94,7 @@ describe('AppController', () => {
         {
           provide: StorageService,
           useValue: {
+            get: jest.fn(),
             save: jest.fn().mockResolvedValue(true),
           },
         },
@@ -302,6 +303,46 @@ describe('AppController', () => {
       const result = await appController.createChallenge(body);
       expect(result).toEqual({ success: true, challengeId: 'chall_123' });
       expect(storageService.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('getChallenge', () => {
+    it('should return the stored challenge details', async () => {
+      const challenge = {
+        id: 'chall_123',
+        txHash: '',
+        payer: '',
+        receiver: 'erd1recv',
+        amount: '100',
+        currency: 'EGLD',
+        chainId: 'D',
+        status: 'pending',
+        verificationAttempts: 2,
+        lastVerificationAt: new Date('2026-04-09T12:30:00Z'),
+        lastVerificationStatus: 'tx-pending',
+        lastVerificationError: 'Transaction is still pending',
+        lastObservedTxStatus: 'pending',
+        lastVerificationTxHash: '0xabc',
+        createdAt: new Date('2026-04-09T12:00:00Z'),
+        updatedAt: new Date('2026-04-09T12:30:00Z'),
+        expiresAt: null,
+        opaque: null,
+        digest: null,
+        source: null,
+      };
+      (storageService.get as jest.Mock).mockResolvedValueOnce(challenge);
+
+      await expect(appController.getChallenge('chall_123')).resolves.toEqual(
+        challenge,
+      );
+    });
+
+    it('should throw when the challenge does not exist', async () => {
+      (storageService.get as jest.Mock).mockResolvedValueOnce(null);
+
+      await expect(appController.getChallenge('missing')).rejects.toThrow(
+        HttpException,
+      );
     });
   });
 });

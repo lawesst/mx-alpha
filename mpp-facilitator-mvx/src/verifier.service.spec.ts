@@ -1,6 +1,7 @@
 import { VerifierService } from './verifier.service';
 import { StorageService, SettlementRecord } from './storage.service';
 import { PrismaService } from './prisma.service';
+import { DatabaseBootstrapService } from './database-bootstrap.service';
 import { Address } from '@multiversx/sdk-core';
 
 // Mock the ApiNetworkProvider
@@ -47,6 +48,7 @@ describe('VerifierService', () => {
   });
 
   beforeEach(async () => {
+    await new DatabaseBootstrapService(prisma).ensureSchema();
     await prisma.settlementRecord.deleteMany();
     storageService = new StorageService(prisma);
     service = new VerifierService(storageService);
@@ -162,6 +164,12 @@ describe('VerifierService', () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('failed');
+
+    const record = await storageService.get(rec.id);
+    expect(record!.verificationAttempts).toBe(1);
+    expect(record!.lastVerificationStatus).toBe('tx-not-successful');
+    expect(record!.lastObservedTxStatus).toBe('fail');
+    expect(record!.lastVerificationTxHash).toBe('0x123');
   });
 
   it('should reject sender mismatch', async () => {
@@ -272,6 +280,11 @@ describe('VerifierService', () => {
     const record = await storageService.get(rec.id);
     expect(record!.status).toBe('completed');
     expect(record!.txHash).toBe('0x123');
+    expect(record!.verificationAttempts).toBe(1);
+    expect(record!.lastVerificationStatus).toBe('success');
+    expect(record!.lastObservedTxStatus).toBe('success');
+    expect(record!.lastVerificationTxHash).toBe('0x123');
+    expect(record!.lastVerificationError).toBeNull();
   });
 
   it('should reject data payload without challenge ID', async () => {
@@ -426,6 +439,14 @@ describe('VerifierService', () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('Opaque mismatch');
+
+    const record = await storageService.get(rec.id);
+    expect(record!.verificationAttempts).toBe(1);
+    expect(record!.lastVerificationStatus).toBe('opaque-mismatch');
+    expect(record!.lastObservedTxStatus).toBe(
+      'challenge-metadata-mismatch',
+    );
+    expect(record!.lastVerificationError).toContain('Opaque mismatch');
   });
 
   it('should verify successfully when opaque matches', async () => {

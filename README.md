@@ -201,5 +201,6 @@ curl \
 - the repo now includes a small indexer that scans saved reports and writes `index.json`, `latest-success.json`, and `summary.md` so repeated runs are easier to review.
 - the report indexer now also writes a static `index.html` dashboard for quick browser-based review.
 - the facilitator can now look up the latest stored audit report for a given payment transaction via `GET /audit-reports/by-payment/<txHash>`.
+- the facilitator can now inspect a payment challenge directly via `GET /challenges/<id>`, including the latest verifier attempt count, observed tx status, verifier status, and error details.
 - unwrap templates are built from the guaranteed minimum output, so clients may still want to adjust the final unwrap amount after execution if more WEGLD is received.
 - This repo is intended as a buildable prototype rather than a polished production release.

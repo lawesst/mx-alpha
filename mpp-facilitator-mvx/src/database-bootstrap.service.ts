@@ -60,6 +60,12 @@ export class DatabaseBootstrapService implements OnModuleInit {
         "currency" TEXT,
         "chainId" TEXT,
         "status" TEXT NOT NULL DEFAULT 'pending',
+        "verificationAttempts" INTEGER NOT NULL DEFAULT 0,
+        "lastVerificationAt" DATETIME,
+        "lastVerificationStatus" TEXT,
+        "lastVerificationError" TEXT,
+        "lastObservedTxStatus" TEXT,
+        "lastVerificationTxHash" TEXT,
         "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         "updatedAt" DATETIME,
         "expiresAt" DATETIME,
@@ -98,6 +104,36 @@ export class DatabaseBootstrapService implements OnModuleInit {
     await this.addColumnIfMissing('SettlementRecord', 'opaque', '"opaque" TEXT');
     await this.addColumnIfMissing('SettlementRecord', 'digest', '"digest" TEXT');
     await this.addColumnIfMissing('SettlementRecord', 'source', '"source" TEXT');
+    await this.addColumnIfMissing(
+      'SettlementRecord',
+      'verificationAttempts',
+      '"verificationAttempts" INTEGER NOT NULL DEFAULT 0',
+    );
+    await this.addColumnIfMissing(
+      'SettlementRecord',
+      'lastVerificationAt',
+      '"lastVerificationAt" DATETIME',
+    );
+    await this.addColumnIfMissing(
+      'SettlementRecord',
+      'lastVerificationStatus',
+      '"lastVerificationStatus" TEXT',
+    );
+    await this.addColumnIfMissing(
+      'SettlementRecord',
+      'lastVerificationError',
+      '"lastVerificationError" TEXT',
+    );
+    await this.addColumnIfMissing(
+      'SettlementRecord',
+      'lastObservedTxStatus',
+      '"lastObservedTxStatus" TEXT',
+    );
+    await this.addColumnIfMissing(
+      'SettlementRecord',
+      'lastVerificationTxHash',
+      '"lastVerificationTxHash" TEXT',
+    );
     await this.backfillUpdatedAt('SettlementRecord');
   }
 

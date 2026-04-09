@@ -49,6 +49,7 @@ The service automatically serves payment metadata via:
 - `GET /intel/wallet-profile?address=<bech32>`
 - `GET /intel/swap-sim?from=<asset>&to=<asset>&amount=<decimal>`
 - `GET /intel/swap-plan?from=<asset>&to=<asset>&amount=<decimal>`
+- `GET /challenges/<id>`
 - `POST /audit-reports`
 - `GET /audit-reports?endpoint=<name>&paymentTxHash=<hash>&status=<success|error>&limit=<n>`
 - `GET /audit-reports/summary?paymentTxHash=<hash>`
@@ -58,6 +59,8 @@ The service automatically serves payment metadata via:
 This file is used by AI agents to understand how to pay for services using MPP.
 
 The audit report endpoints are useful after running the example client with `MX_REPORT_DIR` or `MX_REPORT_FILE` in [`mppx-multiversx`](../mppx-multiversx). They let you ingest those JSON artifacts into the facilitator and query the latest outcomes centrally.
+
+The challenge inspection endpoint is useful when a payer sees repeated `402` responses after broadcasting. It returns the stored settlement row together with the latest verifier diagnostics, including attempt count, observed transaction status, last verifier status, and the last tx hash the facilitator examined.
 
 The facilitator start scripts now build the local [`mppx-multiversx`](../mppx-multiversx) package first, and the service boot path creates any missing local SQLite tables and indexes automatically. That means a fresh local `DATABASE_URL=file:...` no longer needs a manual migration step before development starts.
 

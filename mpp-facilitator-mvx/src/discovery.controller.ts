@@ -421,6 +421,69 @@ export class DiscoveryController {
             },
           },
         },
+        '/challenges/{id}': {
+          get: {
+            operationId: 'getChallenge',
+            summary: 'Inspect a stored challenge',
+            description:
+              'Returns the settlement record for a challenge, including the latest verification diagnostics and observed transaction status.',
+            parameters: [
+              {
+                name: 'id',
+                in: 'path',
+                required: true,
+                schema: { type: 'string' },
+                description: 'Challenge ID',
+              },
+            ],
+            responses: {
+              '200': {
+                description: 'Stored challenge record',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        status: { type: 'string' },
+                        txHash: { type: 'string', nullable: true },
+                        payer: { type: 'string', nullable: true },
+                        receiver: { type: 'string', nullable: true },
+                        amount: { type: 'string', nullable: true },
+                        currency: { type: 'string', nullable: true },
+                        verificationAttempts: { type: 'integer' },
+                        lastVerificationAt: {
+                          type: 'string',
+                          format: 'date-time',
+                          nullable: true,
+                        },
+                        lastVerificationStatus: {
+                          type: 'string',
+                          nullable: true,
+                        },
+                        lastVerificationError: {
+                          type: 'string',
+                          nullable: true,
+                        },
+                        lastObservedTxStatus: {
+                          type: 'string',
+                          nullable: true,
+                        },
+                        lastVerificationTxHash: {
+                          type: 'string',
+                          nullable: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              '404': {
+                description: 'Challenge not found',
+              },
+            },
+          },
+        },
         '/openapi.json': {
           get: {
             operationId: 'getOpenApiSpec',

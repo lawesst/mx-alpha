@@ -1,5 +1,6 @@
 import { StorageService, SettlementRecord } from './storage.service';
 import { PrismaService } from './prisma.service';
+import { DatabaseBootstrapService } from './database-bootstrap.service';
 
 describe('StorageService', () => {
   let service: StorageService;
@@ -14,6 +15,7 @@ describe('StorageService', () => {
   });
 
   beforeEach(async () => {
+    await new DatabaseBootstrapService(prisma).ensureSchema();
     await prisma.settlementRecord.deleteMany();
     service = new StorageService(prisma);
   });
@@ -141,6 +143,41 @@ describe('StorageService', () => {
     expect(await service.get('expired')).toBeNull();
     expect(await service.get('still-valid')).not.toBeNull();
     expect(await service.get('completed-expired')).not.toBeNull(); // not purged because completed
+  });
+
+  it('should persist verification diagnostics', async () => {
+    await service.save({
+      id: 'challenge-verify',
+      txHash: '',
+      payer: 'erd1payer',
+      receiver: 'erd1recv',
+      amount: '100',
+      currency: 'EGLD',
+      chainId: 'D',
+      status: 'pending',
+      createdAt: new Date('2026-04-09T12:00:00Z'),
+      expiresAt: null,
+    });
+
+    await service.recordVerificationAttempt('challenge-verify', {
+      attemptedTxHash: '0xverify',
+      observedTxStatus: 'pending',
+      verificationStatus: 'tx-pending',
+      verificationError: 'Transaction is still pending',
+      verifiedAt: new Date('2026-04-09T12:30:00Z'),
+    });
+
+    const result = await service.get('challenge-verify');
+    expect(result!.verificationAttempts).toBe(1);
+    expect(result!.lastVerificationStatus).toBe('tx-pending');
+    expect(result!.lastVerificationError).toBe(
+      'Transaction is still pending',
+    );
+    expect(result!.lastObservedTxStatus).toBe('pending');
+    expect(result!.lastVerificationTxHash).toBe('0xverify');
+    expect(result!.lastVerificationAt).toEqual(
+      new Date('2026-04-09T12:30:00Z'),
+    );
   });
 
   it('should return correct count', async () => {

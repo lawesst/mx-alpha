@@ -57,6 +57,11 @@ describe('DatabaseBootstrapService', () => {
     );
     expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith(
       expect.stringContaining(
+        'ALTER TABLE "SettlementRecord" ADD COLUMN "lastVerificationStatus" TEXT',
+      ),
+    );
+    expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith(
+      expect.stringContaining(
         'ALTER TABLE "AuditReport" ADD COLUMN "paymentTxHash" TEXT',
       ),
     );

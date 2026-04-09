@@ -1,7 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
-import { SettlementRecord } from '@prisma/client';
+import { Prisma, SettlementRecord } from '@prisma/client';
 export type { SettlementRecord } from '@prisma/client';
+
+export type SettlementVerificationDiagnostics = {
+  attemptedTxHash?: string;
+  observedTxStatus?: string;
+  verificationStatus: string;
+  verificationError?: string | null;
+  verifiedAt?: Date;
+};
+
+export type SettlementRecordSaveInput =
+  Prisma.SettlementRecordUncheckedCreateInput;
 
 @Injectable()
 export class StorageService {
@@ -11,11 +22,24 @@ export class StorageService {
     return this.prisma.settlementRecord.findUnique({ where: { id } });
   }
 
-  async save(record: SettlementRecord): Promise<void> {
+  async save(record: SettlementRecordSaveInput): Promise<void> {
+    const createData: Prisma.SettlementRecordUncheckedCreateInput = {
+      verificationAttempts: 0,
+      lastVerificationAt: null,
+      lastVerificationStatus: null,
+      lastVerificationError: null,
+      lastObservedTxStatus: null,
+      lastVerificationTxHash: null,
+      ...record,
+    };
+    const updateData: Prisma.SettlementRecordUncheckedUpdateInput = {
+      ...createData,
+    };
+
     await this.prisma.settlementRecord.upsert({
-      where: { id: record.id },
-      update: record,
-      create: record,
+      where: { id: createData.id },
+      update: updateData,
+      create: createData,
     });
   }
 
@@ -29,6 +53,25 @@ export class StorageService {
       data: {
         status,
         ...(txHash ? { txHash } : {}),
+      },
+    });
+  }
+
+  async recordVerificationAttempt(
+    id: string,
+    diagnostics: SettlementVerificationDiagnostics,
+  ): Promise<void> {
+    await this.prisma.settlementRecord.update({
+      where: { id },
+      data: {
+        verificationAttempts: {
+          increment: 1,
+        },
+        lastVerificationAt: diagnostics.verifiedAt ?? new Date(),
+        lastVerificationStatus: diagnostics.verificationStatus,
+        lastVerificationError: diagnostics.verificationError ?? null,
+        lastObservedTxStatus: diagnostics.observedTxStatus ?? null,
+        lastVerificationTxHash: diagnostics.attemptedTxHash ?? null,
       },
     });
   }

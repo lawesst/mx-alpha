@@ -150,6 +150,32 @@ describe('DiscoveryController', () => {
     expect(paymentInfo.defaultCurrency).toBe('EGLD');
   });
 
+  it('should expose challenge inspection diagnostics', () => {
+    let responseBody: Record<string, any> = {};
+    const mockRes = {
+      setHeader: () => {},
+      status: () => ({
+        json: (body: any) => {
+          responseBody = body;
+        },
+      }),
+    } as unknown as Response;
+
+    controller.getOpenApiSpec(mockRes);
+
+    const challengePath = responseBody.paths['/challenges/{id}'].get;
+    expect(challengePath).toBeDefined();
+    expect(challengePath.parameters[0].name).toBe('id');
+    expect(
+      challengePath.responses['200'].content['application/json'].schema
+        .properties.lastVerificationStatus,
+    ).toBeDefined();
+    expect(
+      challengePath.responses['200'].content['application/json'].schema
+        .properties.lastObservedTxStatus,
+    ).toBeDefined();
+  });
+
   it('should include Payment security scheme', () => {
     let responseBody: Record<string, any> = {};
     const mockRes = {
@@ -186,6 +212,7 @@ describe('DiscoveryController', () => {
     expect(responseBody.paths['/submit_relayed_v3']).toBeDefined();
     expect(responseBody.paths['/relayer_address']).toBeDefined();
     expect(responseBody.paths['/challenges']).toBeDefined();
+    expect(responseBody.paths['/challenges/{id}']).toBeDefined();
     expect(responseBody.paths['/openapi.json']).toBeDefined();
     expect(responseBody.paths['/intel/token-risk']).toBeDefined();
     expect(responseBody.paths['/intel/wallet-profile']).toBeDefined();
