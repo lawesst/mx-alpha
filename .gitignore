@@ -5,5 +5,8 @@
 **/.env
 **/dev.db
 **/prisma/dev.db
+**/prisma/*.db*
 **/reports/
+**/.paid-intel-state/
+**/.smoke-artifacts/
 live-test/

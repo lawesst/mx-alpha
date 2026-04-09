@@ -1,5 +1,5 @@
-import { Credential } from 'mppx'
-import { Mppx } from 'mppx/client'
+import { Credential } from "mppx";
+import { Mppx } from "mppx/client";
 import {
   Account,
   Address,
@@ -8,7 +8,7 @@ import {
   TokenTransfer,
   TransactionsFactoryConfig,
   TransferTransactionsFactory,
-} from '@multiversx/sdk-core'
+} from "@multiversx/sdk-core";
 import {
   SwapPlanExecutionError,
   SwapPlanPolicyError,
@@ -17,22 +17,40 @@ import {
   executeSwapPlan,
   simulateSwapPlan,
   multiversx,
-} from '../src/client/index.ts'
+} from "../src/client/index.ts";
 import type {
   SwapExecutionPlan,
   SwapPlanExecutionPolicy,
-} from '../src/client/index.ts'
+} from "../src/client/index.ts";
 import {
   buildPaidIntelAuditReport,
   persistPaidIntelAuditReport,
   uploadPaidIntelAuditReport,
-} from './paid-intel-report.ts'
+} from "./paid-intel-report.ts";
+import {
+  clearPendingPaidIntelPaymentState,
+  loadPendingPaidIntelPaymentState,
+  resolvePendingPaymentStatePath,
+  savePendingPaidIntelPaymentState,
+} from "./paid-intel-state.ts";
 
 type ExampleRequest =
-  | { kind: 'token-risk'; token: string }
-  | { kind: 'wallet-profile'; address: string }
-  | { kind: 'swap-sim'; from: string; to: string; amount: string }
-  | { kind: 'swap-plan'; from: string; to: string; amount: string }
+  | { kind: "token-risk"; token: string }
+  | { kind: "wallet-profile"; address: string }
+  | { kind: "swap-sim"; from: string; to: string; amount: string }
+  | { kind: "swap-plan"; from: string; to: string; amount: string };
+
+type TransactionSettlementResult = {
+  status: "success" | "pending" | "failed";
+  txHash: string;
+  explorerUrl: string;
+  apiUrl: string;
+  chainId?: string;
+  observedStatus: string;
+  failureReason?: string;
+  timeoutMs: number;
+  lastCheckedAt: string;
+};
 
 const HELP_TEXT = `
 Usage:
@@ -47,6 +65,8 @@ Environment:
   MX_API_URL          Optional override for the MultiversX API URL
   MX_SETTLEMENT_TIMEOUT_MS  Optional tx settlement timeout in milliseconds (default: 60000)
   MX_POST_SETTLEMENT_DELAY_MS  Optional delay before retry after settlement (default: 3000)
+  MX_PAYMENT_STATE_DIR  Optional directory for resumable pending-payment state (default: ./.paid-intel-state)
+  MX_PAYMENT_STATE_FILE  Optional exact resumable pending-payment state file path
   MX_SIMULATE_SWAP_PLAN  Set to "true" to dry-run swap-plan actions without broadcasting
   MX_EXECUTE_SWAP_PLAN  Set to "true" to sign and submit swap-plan actions after fetching the paid plan
   MX_SKIP_PREBROADCAST_SIMULATION  Set to "true" to execute without the built-in dry-run guard
@@ -67,35 +87,89 @@ Examples:
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- wallet-profile erd1...
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- swap-sim EGLD USDC-c76f1f 1.25
   MX_PEM_PATH=./wallet.pem npm run example:paid-intel -- swap-plan USDC-c76f1f RIDE-7d18e9 25
-`.trim()
+`.trim();
+
+class PaymentPendingError extends Error {
+  readonly txHash: string;
+  readonly settlement: TransactionSettlementResult;
+  readonly statePath: string;
+  readonly resumedFromState: boolean;
+
+  constructor(parameters: {
+    txHash: string;
+    settlement: TransactionSettlementResult;
+    statePath: string;
+    resumedFromState: boolean;
+    message: string;
+  }) {
+    super(parameters.message);
+    this.name = "PaymentPendingError";
+    this.txHash = parameters.txHash;
+    this.settlement = parameters.settlement;
+    this.statePath = parameters.statePath;
+    this.resumedFromState = parameters.resumedFromState;
+  }
+}
+
+class PaymentFailedError extends Error {
+  readonly txHash: string;
+  readonly settlement: TransactionSettlementResult;
+  readonly statePath: string;
+  readonly resumedFromState: boolean;
+
+  constructor(parameters: {
+    txHash: string;
+    settlement: TransactionSettlementResult;
+    statePath: string;
+    resumedFromState: boolean;
+    message: string;
+  }) {
+    super(parameters.message);
+    this.name = "PaymentFailedError";
+    this.txHash = parameters.txHash;
+    this.settlement = parameters.settlement;
+    this.statePath = parameters.statePath;
+    this.resumedFromState = parameters.resumedFromState;
+  }
+}
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2)
+  const args = process.argv.slice(2);
 
-  if (!args[0] || args[0] === '--help' || args[0] === '-h') {
-    console.log(HELP_TEXT)
-    return
+  if (!args[0] || args[0] === "--help" || args[0] === "-h") {
+    console.log(HELP_TEXT);
+    return;
   }
 
-  const request = parseRequest(args)
+  const request = parseRequest(args);
 
-  const pemPath = process.env.MX_PEM_PATH
+  const pemPath = process.env.MX_PEM_PATH;
   if (!pemPath) {
-    throw new Error('MX_PEM_PATH is required so the example can sign the payment transaction.')
+    throw new Error(
+      "MX_PEM_PATH is required so the example can sign the payment transaction.",
+    );
   }
 
-  const baseUrl = process.env.MX_INTEL_BASE_URL || 'http://localhost:3000'
-  const account = await Account.newFromPem(pemPath)
-  const sender = account.address.toBech32()
+  const baseUrl = process.env.MX_INTEL_BASE_URL || "http://localhost:3000";
+  const account = await Account.newFromPem(pemPath);
+  const sender = account.address.toBech32();
+  const executionPolicy =
+    request.kind === "swap-plan" ? buildSwapExecutionPolicy() : undefined;
 
   const client = Mppx.create({
     polyfill: false,
     methods: [
       multiversx.charge({
-        signAndSendTransaction: async ({ amount, challenge, currency, chainId, recipient }) => {
+        signAndSendTransaction: async ({
+          amount,
+          challenge,
+          currency,
+          chainId,
+          recipient,
+        }) => {
           const provider = new ApiNetworkProvider(resolveApiUrl(chainId), {
-            clientName: 'mppx-multiversx-example',
-          })
+            clientName: "mppx-multiversx-example",
+          });
 
           const txHash = await signAndSendTaggedTransfer({
             account,
@@ -104,266 +178,402 @@ async function main(): Promise<void> {
             currency,
             provider,
             recipient,
-            chainId: chainId || 'D',
-          })
+            chainId: chainId || "D",
+          });
 
-          return { txHash, sender }
+          return { txHash, sender };
         },
       }),
     ],
-  })
+  });
 
-  const url = buildIntelUrl(baseUrl, request)
-  const { response, txHash } = await fetchPaidResource({
-    client,
-    sender,
-    url,
-  })
+  const url = buildIntelUrl(baseUrl, request);
+  let latestPaymentTxHash: string | null = null;
+  let latestReceipt: string | null = null;
 
-  if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`Request failed with status ${response.status}: ${body}`)
-  }
+  try {
+    const { response, txHash } = await fetchPaidResource({
+      client,
+      sender,
+      url,
+    });
+    latestPaymentTxHash = txHash;
 
-  const receipt = response.headers.get('payment-receipt')
-  const payload = (await response.json()) as Record<string, unknown>
-  const executionPolicy = request.kind === 'swap-plan' ? buildSwapExecutionPolicy() : undefined
-  const unsignedTransactions =
-    request.kind === 'swap-plan'
-      ? await buildUnsignedSwapPlanTransactions(sender, payload)
-      : undefined
-  const simulation =
-    request.kind === 'swap-plan' && process.env.MX_SIMULATE_SWAP_PLAN === 'true'
-      ? await simulatePaidSwapPlan({
-          sender,
-          payload,
-          executionPolicy,
-        })
-      : undefined
-  const execution =
-    request.kind === 'swap-plan' && process.env.MX_EXECUTE_SWAP_PLAN === 'true'
-      ? await executePaidSwapPlan({
-          account,
-          payload,
-          executionPolicy,
-        })
-      : undefined
-  const simulationError =
-    request.kind === 'swap-plan' &&
-    process.env.MX_SIMULATE_SWAP_PLAN === 'true' &&
-    simulation instanceof SwapPlanSimulationError
-      ? serializeSwapPlanSimulationError(simulation)
-      : undefined
-  const simulationPolicyError =
-    request.kind === 'swap-plan' &&
-    process.env.MX_SIMULATE_SWAP_PLAN === 'true' &&
-    simulation instanceof SwapPlanPolicyError
-      ? serializeSwapPlanPolicyError(simulation)
-      : undefined
-  const executionError =
-    request.kind === 'swap-plan' &&
-    process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
-    execution instanceof SwapPlanExecutionError
-      ? serializeSwapPlanExecutionError(execution)
-      : undefined
-  const executionSimulationError =
-    request.kind === 'swap-plan' &&
-    process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
-    execution instanceof SwapPlanSimulationError
-      ? serializeSwapPlanSimulationError(execution)
-      : undefined
-  const executionPolicyError =
-    request.kind === 'swap-plan' &&
-    process.env.MX_EXECUTE_SWAP_PLAN === 'true' &&
-    execution instanceof SwapPlanPolicyError
-      ? serializeSwapPlanPolicyError(execution)
-      : undefined
-  const result = {
-    endpoint: request.kind,
-    receipt,
-    txHash,
-    payload,
-    ...(unsignedTransactions ? { unsignedTransactions } : {}),
-    ...(simulation &&
-    !(simulation instanceof SwapPlanSimulationError) &&
-    !(simulation instanceof SwapPlanPolicyError)
-      ? { simulation }
-      : {}),
-    ...(simulationError ? { simulationError } : {}),
-    ...(simulationPolicyError ? { simulationPolicyError } : {}),
-    ...(execution && !(execution instanceof SwapPlanExecutionError)
-      && !(execution instanceof SwapPlanSimulationError)
-      && !(execution instanceof SwapPlanPolicyError)
-      ? { execution }
-      : {}),
-    ...(executionError ? { executionError } : {}),
-    ...(executionSimulationError ? { executionSimulationError } : {}),
-    ...(executionPolicyError ? { executionPolicyError } : {}),
-  }
-  const auditReport = buildPaidIntelAuditReport({
-    endpoint: request.kind,
-    request: {
-      kind: request.kind,
-      ...request,
-    },
-    sender,
-    facilitatorBaseUrl: baseUrl,
-    receipt,
-    paymentTxHash: txHash,
-    ...(executionPolicy ? { executionPolicy } : {}),
-    result,
-  })
-  const reportPath = await persistPaidIntelAuditReport({
-    report: auditReport,
-    outputDir: process.env.MX_REPORT_DIR,
-    outputFile: process.env.MX_REPORT_FILE,
-  })
-  const { uploadedReport, uploadError } = shouldUploadAuditReport()
-    ? await uploadAuditReport({
-        auditReport,
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Request failed with status ${response.status}: ${body}`);
+    }
+
+    const receipt = response.headers.get("payment-receipt");
+    latestReceipt = receipt;
+    const payload = (await response.json()) as Record<string, unknown>;
+    const unsignedTransactions =
+      request.kind === "swap-plan"
+        ? await buildUnsignedSwapPlanTransactions(sender, payload)
+        : undefined;
+    const simulation =
+      request.kind === "swap-plan" &&
+      process.env.MX_SIMULATE_SWAP_PLAN === "true"
+        ? await simulatePaidSwapPlan({
+            sender,
+            payload,
+            executionPolicy,
+          })
+        : undefined;
+    const execution =
+      request.kind === "swap-plan" &&
+      process.env.MX_EXECUTE_SWAP_PLAN === "true"
+        ? await executePaidSwapPlan({
+            account,
+            payload,
+            executionPolicy,
+          })
+        : undefined;
+    const simulationError =
+      request.kind === "swap-plan" &&
+      process.env.MX_SIMULATE_SWAP_PLAN === "true" &&
+      simulation instanceof SwapPlanSimulationError
+        ? serializeSwapPlanSimulationError(simulation)
+        : undefined;
+    const simulationPolicyError =
+      request.kind === "swap-plan" &&
+      process.env.MX_SIMULATE_SWAP_PLAN === "true" &&
+      simulation instanceof SwapPlanPolicyError
+        ? serializeSwapPlanPolicyError(simulation)
+        : undefined;
+    const executionError =
+      request.kind === "swap-plan" &&
+      process.env.MX_EXECUTE_SWAP_PLAN === "true" &&
+      execution instanceof SwapPlanExecutionError
+        ? serializeSwapPlanExecutionError(execution)
+        : undefined;
+    const executionSimulationError =
+      request.kind === "swap-plan" &&
+      process.env.MX_EXECUTE_SWAP_PLAN === "true" &&
+      execution instanceof SwapPlanSimulationError
+        ? serializeSwapPlanSimulationError(execution)
+        : undefined;
+    const executionPolicyError =
+      request.kind === "swap-plan" &&
+      process.env.MX_EXECUTE_SWAP_PLAN === "true" &&
+      execution instanceof SwapPlanPolicyError
+        ? serializeSwapPlanPolicyError(execution)
+        : undefined;
+    const result = {
+      endpoint: request.kind,
+      receipt,
+      txHash,
+      payload,
+      ...(unsignedTransactions ? { unsignedTransactions } : {}),
+      ...(simulation &&
+      !(simulation instanceof SwapPlanSimulationError) &&
+      !(simulation instanceof SwapPlanPolicyError)
+        ? { simulation }
+        : {}),
+      ...(simulationError ? { simulationError } : {}),
+      ...(simulationPolicyError ? { simulationPolicyError } : {}),
+      ...(execution &&
+      !(execution instanceof SwapPlanExecutionError) &&
+      !(execution instanceof SwapPlanSimulationError) &&
+      !(execution instanceof SwapPlanPolicyError)
+        ? { execution }
+        : {}),
+      ...(executionError ? { executionError } : {}),
+      ...(executionSimulationError ? { executionSimulationError } : {}),
+      ...(executionPolicyError ? { executionPolicyError } : {}),
+    };
+
+    await finalizeRun({
+      request,
+      sender,
+      baseUrl,
+      receipt,
+      paymentTxHash: txHash,
+      executionPolicy,
+      result,
+    });
+  } catch (error) {
+    if (
+      error instanceof PaymentPendingError ||
+      error instanceof PaymentFailedError
+    ) {
+      await finalizeRun({
+        request,
+        sender,
         baseUrl,
-      })
-    : { uploadedReport: undefined, uploadError: undefined }
-  const output = {
-    ...result,
-    ...(reportPath ? { reportPath } : {}),
-    ...(uploadedReport ? { uploadedReport } : {}),
-    ...(uploadError ? { uploadError } : {}),
-  }
+        receipt: null,
+        paymentTxHash: error.txHash,
+        executionPolicy,
+        result: serializePaymentLifecycleError(request.kind, error),
+      });
+      return;
+    }
 
-  console.log(
-    JSON.stringify(output, null, 2),
-  )
-
-  if (
-    simulationError ||
-    simulationPolicyError ||
-    executionError ||
-    executionSimulationError ||
-    executionPolicyError ||
-    uploadError
-  ) {
-    process.exitCode = 1
+    await finalizeRun({
+      request,
+      sender,
+      baseUrl,
+      receipt: null,
+      paymentTxHash: latestPaymentTxHash,
+      executionPolicy,
+      result: {
+        endpoint: request.kind,
+        ...(latestReceipt ? { receipt: latestReceipt } : {}),
+        genericError: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      },
+    });
   }
 }
 
 function parseRequest(args: string[]): ExampleRequest {
-  const [kind, ...rest] = args
+  const [kind, ...rest] = args;
 
-  if (kind === 'token-risk') {
+  if (kind === "token-risk") {
     if (!rest[0]) {
-      throw new Error(`Missing token identifier for "${kind}".\n\n${HELP_TEXT}`)
+      throw new Error(
+        `Missing token identifier for "${kind}".\n\n${HELP_TEXT}`,
+      );
     }
-    return { kind, token: rest[0] }
+    return { kind, token: rest[0] };
   }
 
-  if (kind === 'wallet-profile') {
+  if (kind === "wallet-profile") {
     if (!rest[0]) {
-      throw new Error(`Missing wallet address for "${kind}".\n\n${HELP_TEXT}`)
+      throw new Error(`Missing wallet address for "${kind}".\n\n${HELP_TEXT}`);
     }
-    return { kind, address: rest[0] }
+    return { kind, address: rest[0] };
   }
 
-  if (kind === 'swap-sim' || kind === 'swap-plan') {
-    const [from, to, amount] = rest
+  if (kind === "swap-sim" || kind === "swap-plan") {
+    const [from, to, amount] = rest;
     if (!from || !to || !amount) {
-      throw new Error(`Missing from/to/amount values for "${kind}".\n\n${HELP_TEXT}`)
+      throw new Error(
+        `Missing from/to/amount values for "${kind}".\n\n${HELP_TEXT}`,
+      );
     }
-    return { kind, from, to, amount }
+    return { kind, from, to, amount };
   }
 
   throw new Error(
     `Unsupported endpoint "${kind}". Expected "token-risk", "wallet-profile", "swap-sim", or "swap-plan".`,
-  )
+  );
 }
 
 function buildIntelUrl(baseUrl: string, request: ExampleRequest): string {
-  const url = new URL(`/intel/${request.kind}`, baseUrl)
+  const url = new URL(`/intel/${request.kind}`, baseUrl);
 
-  if (request.kind === 'token-risk') {
-    url.searchParams.set('token', request.token)
-  } else if (request.kind === 'wallet-profile') {
-    url.searchParams.set('address', request.address)
+  if (request.kind === "token-risk") {
+    url.searchParams.set("token", request.token);
+  } else if (request.kind === "wallet-profile") {
+    url.searchParams.set("address", request.address);
   } else {
-    url.searchParams.set('from', request.from)
-    url.searchParams.set('to', request.to)
-    url.searchParams.set('amount', request.amount)
+    url.searchParams.set("from", request.from);
+    url.searchParams.set("to", request.to);
+    url.searchParams.set("amount", request.amount);
   }
 
-  return url.toString()
+  return url.toString();
 }
 
 function resolveApiUrl(chainId?: string): string {
-  if (process.env.MX_API_URL) return process.env.MX_API_URL
+  if (process.env.MX_API_URL) return process.env.MX_API_URL;
 
   switch (chainId) {
-    case '1':
-      return 'https://api.multiversx.com'
-    case 'T':
-      return 'https://testnet-api.multiversx.com'
-    case 'D':
+    case "1":
+      return "https://api.multiversx.com";
+    case "T":
+      return "https://testnet-api.multiversx.com";
+    case "D":
     default:
-      return 'https://devnet-api.multiversx.com'
+      return "https://devnet-api.multiversx.com";
   }
 }
 
 async function fetchPaidResource(options: {
-  client: ReturnType<typeof Mppx.create>
-  sender: string
-  url: string
+  client: ReturnType<typeof Mppx.create>;
+  sender: string;
+  url: string;
 }): Promise<{ response: Response; txHash: string | null }> {
-  const initialResponse = await fetch(options.url, { method: 'GET' })
+  const paymentStatePath = resolvePendingPaymentStatePath({
+    sender: options.sender,
+    url: options.url,
+    outputDir: process.env.MX_PAYMENT_STATE_DIR,
+    outputFile: process.env.MX_PAYMENT_STATE_FILE,
+  });
+  const initialResponse = await fetch(options.url, { method: "GET" });
 
   if (initialResponse.status !== 402) {
-    return { response: initialResponse, txHash: null }
+    return { response: initialResponse, txHash: null };
+  }
+
+  const pendingState = await loadPendingPaidIntelPaymentState(paymentStatePath);
+  if (
+    pendingState &&
+    pendingState.sender === options.sender &&
+    pendingState.url === options.url
+  ) {
+    const resumedSettlement = await waitForTransactionSettlement({
+      apiUrl: resolveApiUrl(pendingState.chainId),
+      txHash: pendingState.txHash,
+      chainId: pendingState.chainId,
+    });
+
+    if (resumedSettlement.status === "pending") {
+      throw new PaymentPendingError({
+        txHash: pendingState.txHash,
+        settlement: resumedSettlement,
+        statePath: paymentStatePath,
+        resumedFromState: true,
+        message:
+          `Payment transaction ${pendingState.txHash} is still pending. ` +
+          `Rerun the same command later to resume with the saved credential.`,
+      });
+    }
+
+    if (resumedSettlement.status === "failed") {
+      await clearPendingPaidIntelPaymentState(paymentStatePath);
+      throw new PaymentFailedError({
+        txHash: pendingState.txHash,
+        settlement: resumedSettlement,
+        statePath: paymentStatePath,
+        resumedFromState: true,
+        message:
+          `Saved payment transaction ${pendingState.txHash} failed with status ` +
+          `"${resumedSettlement.observedStatus}".`,
+      });
+    }
+
+    await waitAfterSettlement();
+    const resumedResponse = await fetch(options.url, {
+      method: "GET",
+      headers: { Authorization: pendingState.credential },
+    });
+
+    if (shouldClearPendingPaymentState(resumedResponse)) {
+      await clearPendingPaidIntelPaymentState(paymentStatePath);
+    }
+
+    if (resumedResponse.status !== 402) {
+      return { response: resumedResponse, txHash: pendingState.txHash };
+    }
+
+    throw new PaymentPendingError({
+      txHash: pendingState.txHash,
+      settlement: resumedSettlement,
+      statePath: paymentStatePath,
+      resumedFromState: true,
+      message:
+        `Payment transaction ${pendingState.txHash} settled successfully, but the facilitator ` +
+        `is still returning 402. Rerun the same command to retry with the saved credential.`,
+    });
   }
 
   const credential = await options.client.createCredential(initialResponse, {
     sender: options.sender,
-  })
-  const parsedCredential = Credential.deserialize(credential)
-  const txHash = String(parsedCredential.payload.txHash)
+  });
+  const parsedCredential = Credential.deserialize(credential);
+  const txHash = String(parsedCredential.payload.txHash);
   const chainId = parsedCredential.challenge.request.methodDetails?.chainId as
     | string
-    | undefined
+    | undefined;
 
-  await waitForTransactionSettlement({
+  await savePendingPaidIntelPaymentState({
+    statePath: paymentStatePath,
+    sender: options.sender,
+    url: options.url,
+    txHash,
+    credential,
+    chainId,
+  });
+
+  const settlement = await waitForTransactionSettlement({
     apiUrl: resolveApiUrl(chainId),
     txHash,
-  })
-  await waitAfterSettlement()
+    chainId,
+  });
+
+  if (settlement.status === "pending") {
+    throw new PaymentPendingError({
+      txHash,
+      settlement,
+      statePath: paymentStatePath,
+      resumedFromState: false,
+      message:
+        `Payment transaction ${txHash} is still pending. ` +
+        `Rerun the same command later to resume with the saved credential.`,
+    });
+  }
+
+  if (settlement.status === "failed") {
+    await clearPendingPaidIntelPaymentState(paymentStatePath);
+    throw new PaymentFailedError({
+      txHash,
+      settlement,
+      statePath: paymentStatePath,
+      resumedFromState: false,
+      message: `Payment transaction ${txHash} failed with status "${settlement.observedStatus}".`,
+    });
+  }
+
+  await waitAfterSettlement();
 
   const authorizedResponse = await fetch(options.url, {
-    method: 'GET',
+    method: "GET",
     headers: { Authorization: credential },
-  })
+  });
 
-  return { response: authorizedResponse, txHash }
+  if (shouldClearPendingPaymentState(authorizedResponse)) {
+    await clearPendingPaidIntelPaymentState(paymentStatePath);
+  }
+
+  if (authorizedResponse.status === 402) {
+    throw new PaymentPendingError({
+      txHash,
+      settlement,
+      statePath: paymentStatePath,
+      resumedFromState: false,
+      message:
+        `Payment transaction ${txHash} settled successfully, but the facilitator still ` +
+        `returned 402 on the authorized retry. Rerun the same command to reuse the saved credential.`,
+    });
+  }
+
+  return { response: authorizedResponse, txHash };
 }
 
 async function signAndSendTaggedTransfer(options: {
-  account: Account
-  amount: string
-  challengeId: string
-  currency: string
-  provider: ApiNetworkProvider
-  recipient: string
-  chainId: string
+  account: Account;
+  amount: string;
+  challengeId: string;
+  currency: string;
+  provider: ApiNetworkProvider;
+  recipient: string;
+  chainId: string;
 }): Promise<string> {
-  const { account, amount, challengeId, currency, provider, recipient, chainId } = options
-  const recipientAddress = Address.newFromBech32(recipient)
-  const networkConfig = await provider.getNetworkConfig()
-  const accountOnNetwork = await provider.getAccount(account.address)
+  const {
+    account,
+    amount,
+    challengeId,
+    currency,
+    provider,
+    recipient,
+    chainId,
+  } = options;
+  const recipientAddress = Address.newFromBech32(recipient);
+  const networkConfig = await provider.getNetworkConfig();
+  const accountOnNetwork = await provider.getAccount(account.address);
 
-  const txConfig = new TransactionsFactoryConfig({ chainID: chainId })
-  txConfig.minGasLimit = networkConfig.minGasLimit
-  txConfig.gasLimitPerByte = networkConfig.gasPerDataByte
+  const txConfig = new TransactionsFactoryConfig({ chainID: chainId });
+  txConfig.minGasLimit = networkConfig.minGasLimit;
+  txConfig.gasLimitPerByte = networkConfig.gasPerDataByte;
 
-  const factory = new TransferTransactionsFactory({ config: txConfig })
-  const tag = `mpp:${challengeId}`
+  const factory = new TransferTransactionsFactory({ config: txConfig });
+  const tag = `mpp:${challengeId}`;
 
   const transaction =
-    currency === 'EGLD'
+    currency === "EGLD"
       ? await factory.createTransactionForNativeTokenTransfer(account.address, {
           receiver: recipientAddress,
           nativeAmount: BigInt(amount),
@@ -376,53 +586,87 @@ async function signAndSendTaggedTransfer(options: {
           receiver: recipientAddress,
           sender: account.address,
           tag,
-        })
+        });
 
-  transaction.nonce = BigInt(accountOnNetwork.nonce)
-  transaction.signature = await account.signTransaction(transaction)
+  transaction.nonce = BigInt(accountOnNetwork.nonce);
+  transaction.signature = await account.signTransaction(transaction);
 
-  return provider.sendTransaction(transaction)
+  return provider.sendTransaction(transaction);
 }
 
 async function waitForTransactionSettlement(options: {
-  apiUrl: string
-  txHash: string
-}): Promise<void> {
+  apiUrl: string;
+  txHash: string;
+  chainId?: string;
+}): Promise<TransactionSettlementResult> {
   const provider = new ApiNetworkProvider(options.apiUrl, {
-    clientName: 'mppx-multiversx-example',
-  })
-  const timeoutMs = parseInt(process.env.MX_SETTLEMENT_TIMEOUT_MS || '60000', 10)
-  const startedAt = Date.now()
+    clientName: "mppx-multiversx-example",
+  });
+  const timeoutMs = parseInt(
+    process.env.MX_SETTLEMENT_TIMEOUT_MS || "60000",
+    10,
+  );
+  const startedAt = Date.now();
+  let observedStatus = "unknown";
+  let failureReason: string | undefined;
 
   while (Date.now() - startedAt < timeoutMs) {
-    const tx = await provider.getTransaction(options.txHash).catch(() => null)
-    const status =
-      typeof tx?.status === 'string'
-        ? tx.status
-        : tx?.status?.isSuccessful?.()
-          ? 'success'
-          : tx?.status?.isPending?.()
-            ? 'pending'
-            : 'unknown'
+    const tx = await provider.getTransaction(options.txHash).catch(() => null);
+    const normalizedStatus = normalizeTransactionStatus(tx);
+    observedStatus = normalizedStatus.status;
+    failureReason = normalizedStatus.failureReason;
 
-    if (status === 'success') {
-      return
+    if (observedStatus === "success") {
+      return {
+        status: "success",
+        txHash: options.txHash,
+        explorerUrl: buildExplorerUrl(options.chainId, options.txHash),
+        apiUrl: options.apiUrl,
+        ...(options.chainId ? { chainId: options.chainId } : {}),
+        observedStatus,
+        ...(failureReason ? { failureReason } : {}),
+        timeoutMs,
+        lastCheckedAt: new Date().toISOString(),
+      };
     }
 
-    if (status !== 'pending' && status !== 'unknown') {
-      throw new Error(`Transaction ${options.txHash} did not settle successfully: ${status}`)
+    if (observedStatus !== "pending" && observedStatus !== "unknown") {
+      return {
+        status: "failed",
+        txHash: options.txHash,
+        explorerUrl: buildExplorerUrl(options.chainId, options.txHash),
+        apiUrl: options.apiUrl,
+        ...(options.chainId ? { chainId: options.chainId } : {}),
+        observedStatus,
+        ...(failureReason ? { failureReason } : {}),
+        timeoutMs,
+        lastCheckedAt: new Date().toISOString(),
+      };
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
-  throw new Error(`Transaction ${options.txHash} did not settle within ${timeoutMs}ms`)
+  return {
+    status: "pending",
+    txHash: options.txHash,
+    explorerUrl: buildExplorerUrl(options.chainId, options.txHash),
+    apiUrl: options.apiUrl,
+    ...(options.chainId ? { chainId: options.chainId } : {}),
+    observedStatus,
+    ...(failureReason ? { failureReason } : {}),
+    timeoutMs,
+    lastCheckedAt: new Date().toISOString(),
+  };
 }
 
 async function waitAfterSettlement(): Promise<void> {
-  const delayMs = parseInt(process.env.MX_POST_SETTLEMENT_DELAY_MS || '3000', 10)
+  const delayMs = parseInt(
+    process.env.MX_POST_SETTLEMENT_DELAY_MS || "3000",
+    10,
+  );
   if (delayMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 }
 
@@ -430,29 +674,29 @@ async function buildUnsignedSwapPlanTransactions(
   sender: string,
   payload: Record<string, unknown>,
 ) {
-  const executionPlan = extractExecutionPlan(payload)
+  const executionPlan = extractExecutionPlan(payload);
   if (!executionPlan?.actions) {
-    return undefined
+    return undefined;
   }
 
   const transactions = await buildTransactionsFromSwapPlan({
     sender,
     plan: executionPlan,
     ignoreUnsupportedActions: true,
-  })
+  });
 
   return transactions.map((transaction) => ({
     receiver: transaction.receiver.toBech32(),
     gasLimit: transaction.gasLimit.toString(),
     value: transaction.value.toString(),
     data: Buffer.from(transaction.data).toString(),
-  }))
+  }));
 }
 
 async function executePaidSwapPlan(options: {
-  account: Account
-  payload: Record<string, unknown>
-  executionPolicy?: SwapPlanExecutionPolicy
+  account: Account;
+  payload: Record<string, unknown>;
+  executionPolicy?: SwapPlanExecutionPolicy;
 }): Promise<
   | ReturnType<typeof serializeExecutionResult>
   | SwapPlanExecutionError
@@ -460,14 +704,17 @@ async function executePaidSwapPlan(options: {
   | SwapPlanPolicyError
   | undefined
 > {
-  const executionPlan = extractExecutionPlan(options.payload)
+  const executionPlan = extractExecutionPlan(options.payload);
   if (!executionPlan?.actions) {
-    return undefined
+    return undefined;
   }
 
-  const provider = new ApiNetworkProvider(resolveApiUrl(executionPlan.chainId), {
-    clientName: 'mppx-multiversx-example',
-  })
+  const provider = new ApiNetworkProvider(
+    resolveApiUrl(executionPlan.chainId),
+    {
+      clientName: "mppx-multiversx-example",
+    },
+  );
   try {
     const result = await executeSwapPlan({
       signer: options.account,
@@ -475,46 +722,51 @@ async function executePaidSwapPlan(options: {
       plan: executionPlan,
       ignoreUnsupportedActions: true,
       simulateBeforeBroadcast:
-        process.env.MX_SKIP_PREBROADCAST_SIMULATION !== 'true',
-      ...(options.executionPolicy ? { executionPolicy: options.executionPolicy } : {}),
-    })
+        process.env.MX_SKIP_PREBROADCAST_SIMULATION !== "true",
+      ...(options.executionPolicy
+        ? { executionPolicy: options.executionPolicy }
+        : {}),
+    });
 
-    return serializeExecutionResult(result)
+    return serializeExecutionResult(result);
   } catch (error) {
     if (error instanceof SwapPlanExecutionError) {
-      return error
+      return error;
     }
 
     if (error instanceof SwapPlanPolicyError) {
-      return error
+      return error;
     }
 
     if (error instanceof SwapPlanSimulationError) {
-      return error
+      return error;
     }
 
-    throw error
+    throw error;
   }
 }
 
 async function simulatePaidSwapPlan(options: {
-  sender: string
-  payload: Record<string, unknown>
-  executionPolicy?: SwapPlanExecutionPolicy
+  sender: string;
+  payload: Record<string, unknown>;
+  executionPolicy?: SwapPlanExecutionPolicy;
 }): Promise<
   | ReturnType<typeof serializeSimulationResult>
   | SwapPlanSimulationError
   | SwapPlanPolicyError
   | undefined
 > {
-  const executionPlan = extractExecutionPlan(options.payload)
+  const executionPlan = extractExecutionPlan(options.payload);
   if (!executionPlan?.actions) {
-    return undefined
+    return undefined;
   }
 
-  const provider = new ApiNetworkProvider(resolveApiUrl(executionPlan.chainId), {
-    clientName: 'mppx-multiversx-example',
-  })
+  const provider = new ApiNetworkProvider(
+    resolveApiUrl(executionPlan.chainId),
+    {
+      clientName: "mppx-multiversx-example",
+    },
+  );
 
   try {
     const result = await simulateSwapPlan({
@@ -522,51 +774,57 @@ async function simulatePaidSwapPlan(options: {
       provider,
       plan: executionPlan,
       ignoreUnsupportedActions: true,
-      ...(options.executionPolicy ? { executionPolicy: options.executionPolicy } : {}),
-    })
+      ...(options.executionPolicy
+        ? { executionPolicy: options.executionPolicy }
+        : {}),
+    });
 
-    return serializeSimulationResult(result)
+    return serializeSimulationResult(result);
   } catch (error) {
     if (error instanceof SwapPlanSimulationError) {
-      return error
+      return error;
     }
 
     if (error instanceof SwapPlanPolicyError) {
-      return error
+      return error;
     }
 
-    throw error
+    throw error;
   }
 }
 
-function extractExecutionPlan(payload: Record<string, unknown>): SwapExecutionPlan | undefined {
-  const executionPlan = payload.executionPlan
+function extractExecutionPlan(
+  payload: Record<string, unknown>,
+): SwapExecutionPlan | undefined {
+  const executionPlan = payload.executionPlan;
 
-  if (!executionPlan || typeof executionPlan !== 'object') {
-    return undefined
+  if (!executionPlan || typeof executionPlan !== "object") {
+    return undefined;
   }
 
-  const candidate = executionPlan as SwapExecutionPlan
+  const candidate = executionPlan as SwapExecutionPlan;
   if (!Array.isArray(candidate.actions)) {
-    return undefined
+    return undefined;
   }
 
-  return candidate
+  return candidate;
 }
 
 function buildSwapExecutionPolicy(): SwapPlanExecutionPolicy | undefined {
-  const isExecuting = process.env.MX_EXECUTE_SWAP_PLAN === 'true'
-  const maxActionCount = parseOptionalInteger(process.env.MX_SWAP_MAX_ACTIONS)
-  const allowedActionTypes = parseCsvEnv(process.env.MX_SWAP_ALLOWED_ACTION_TYPES)
-  const allowedReceivers = parseCsvEnv(process.env.MX_SWAP_ALLOWED_RECEIVERS)
-  const allowedChainIds = parseCsvEnv(process.env.MX_SWAP_ALLOWED_CHAIN_IDS)
-  const allowedStrategies = parseCsvEnv(process.env.MX_SWAP_ALLOWED_STRATEGIES)
+  const isExecuting = process.env.MX_EXECUTE_SWAP_PLAN === "true";
+  const maxActionCount = parseOptionalInteger(process.env.MX_SWAP_MAX_ACTIONS);
+  const allowedActionTypes = parseCsvEnv(
+    process.env.MX_SWAP_ALLOWED_ACTION_TYPES,
+  );
+  const allowedReceivers = parseCsvEnv(process.env.MX_SWAP_ALLOWED_RECEIVERS);
+  const allowedChainIds = parseCsvEnv(process.env.MX_SWAP_ALLOWED_CHAIN_IDS);
+  const allowedStrategies = parseCsvEnv(process.env.MX_SWAP_ALLOWED_STRATEGIES);
   const maxSuggestedSlippageBps = parseOptionalInteger(
     process.env.MX_SWAP_MAX_SLIPPAGE_BPS,
-  )
+  );
   const maxSuggestedDeadlineSeconds = parseOptionalInteger(
     process.env.MX_SWAP_MAX_DEADLINE_SECONDS,
-  )
+  );
 
   if (
     !isExecuting &&
@@ -578,7 +836,7 @@ function buildSwapExecutionPolicy(): SwapPlanExecutionPolicy | undefined {
     maxSuggestedSlippageBps === undefined &&
     maxSuggestedDeadlineSeconds === undefined
   ) {
-    return undefined
+    return undefined;
   }
 
   return {
@@ -590,14 +848,20 @@ function buildSwapExecutionPolicy(): SwapPlanExecutionPolicy | undefined {
     ...(allowedActionTypes
       ? { allowedActionTypes }
       : isExecuting
-        ? { allowedActionTypes: ['wrap-egld', 'swap-fixed-input', 'unwrap-egld'] }
+        ? {
+            allowedActionTypes: [
+              "wrap-egld",
+              "swap-fixed-input",
+              "unwrap-egld",
+            ],
+          }
         : {}),
     ...(allowedReceivers ? { allowedReceivers } : {}),
     ...(allowedChainIds ? { allowedChainIds } : {}),
     ...(allowedStrategies
       ? { allowedStrategies }
       : isExecuting
-        ? { allowedStrategies: ['xexchange-pair-sequence'] }
+        ? { allowedStrategies: ["xexchange-pair-sequence"] }
         : {}),
     ...(maxSuggestedSlippageBps !== undefined
       ? { maxSuggestedSlippageBps }
@@ -605,93 +869,98 @@ function buildSwapExecutionPolicy(): SwapPlanExecutionPolicy | undefined {
     ...(maxSuggestedDeadlineSeconds !== undefined
       ? { maxSuggestedDeadlineSeconds }
       : {}),
-  }
+  };
 }
 
 async function createTaggedEsdtTransfer(
   factory: TransferTransactionsFactory,
   options: {
-    amount: string
-    currency: string
-    gasPerDataByte: bigint
-    receiver: Address
-    sender: Address
-    tag: string
+    amount: string;
+    currency: string;
+    gasPerDataByte: bigint;
+    receiver: Address;
+    sender: Address;
+    tag: string;
   },
 ) {
   const transfer = new TokenTransfer({
     token: new Token({ identifier: options.currency }),
     amount: BigInt(options.amount),
-  })
+  });
 
-  const transaction = await factory.createTransactionForESDTTokenTransfer(options.sender, {
-    receiver: options.receiver,
-    tokenTransfers: [transfer],
-  })
+  const transaction = await factory.createTransactionForESDTTokenTransfer(
+    options.sender,
+    {
+      receiver: options.receiver,
+      tokenTransfers: [transfer],
+    },
+  );
 
-  const taggedData = `${Buffer.from(transaction.data).toString()}@${Buffer.from(options.tag).toString('hex')}`
-  transaction.data = Buffer.from(taggedData)
-  transaction.gasLimit += BigInt(Buffer.byteLength(`@${Buffer.from(options.tag).toString('hex')}`)) * options.gasPerDataByte
+  const taggedData = `${Buffer.from(transaction.data).toString()}@${Buffer.from(options.tag).toString("hex")}`;
+  transaction.data = Buffer.from(taggedData);
+  transaction.gasLimit +=
+    BigInt(Buffer.byteLength(`@${Buffer.from(options.tag).toString("hex")}`)) *
+    options.gasPerDataByte;
 
-  return transaction
+  return transaction;
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error)
-  console.error(message)
-  process.exitCode = 1
-})
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  process.exitCode = 1;
+});
 
 function serializeExecutionResult(result: {
-  actionOutputs: Record<number, { token?: string; amount: string }>
+  actionOutputs: Record<number, { token?: string; amount: string }>;
   simulations?: Array<{
-    actionIndex: number
-    actionType: string
-    status: string
-    output?: { token?: string; amount: string }
-    failureReason?: string
+    actionIndex: number;
+    actionType: string;
+    status: string;
+    output?: { token?: string; amount: string };
+    failureReason?: string;
     transaction: {
-      receiver: Address
-      gasLimit: bigint
-      value: bigint
-      data: Uint8Array | Buffer
-    }
-  }>
+      receiver: Address;
+      gasLimit: bigint;
+      value: bigint;
+      data: Uint8Array | Buffer;
+    };
+  }>;
   executions: Array<{
-    actionIndex: number
-    actionType: string
-    txHash: string
-    status: string
+    actionIndex: number;
+    actionType: string;
+    txHash: string;
+    status: string;
     preBroadcastSimulation?: {
-      actionIndex: number
-      actionType: string
-      status: string
-      output?: { token?: string; amount: string }
-      failureReason?: string
+      actionIndex: number;
+      actionType: string;
+      status: string;
+      output?: { token?: string; amount: string };
+      failureReason?: string;
       transaction: {
-        receiver: Address
-        gasLimit: bigint
-        value: bigint
-        data: Uint8Array | Buffer
-      }
-    }
-    output?: { token?: string; amount: string }
+        receiver: Address;
+        gasLimit: bigint;
+        value: bigint;
+        data: Uint8Array | Buffer;
+      };
+    };
+    output?: { token?: string; amount: string };
     outputComparison?: {
-      simulatedToken?: string
-      actualToken?: string
-      simulatedAmount: string
-      actualAmount: string
-      deltaAmount?: string
-      absoluteDeltaAmount?: string
-    }
-    failureReason?: string
+      simulatedToken?: string;
+      actualToken?: string;
+      simulatedAmount: string;
+      actualAmount: string;
+      deltaAmount?: string;
+      absoluteDeltaAmount?: string;
+    };
+    failureReason?: string;
     transaction: {
-      receiver: Address
-      gasLimit: bigint
-      value: bigint
-      data: Uint8Array | Buffer
-    }
-  }>
+      receiver: Address;
+      gasLimit: bigint;
+      value: bigint;
+      data: Uint8Array | Buffer;
+    };
+  }>;
 }) {
   return {
     actionOutputs: result.actionOutputs,
@@ -719,37 +988,39 @@ function serializeExecutionResult(result: {
       ...(execution.outputComparison
         ? { outputComparison: execution.outputComparison }
         : {}),
-      ...(execution.failureReason ? { failureReason: execution.failureReason } : {}),
+      ...(execution.failureReason
+        ? { failureReason: execution.failureReason }
+        : {}),
       receiver: execution.transaction.receiver.toBech32(),
       gasLimit: execution.transaction.gasLimit.toString(),
       value: execution.transaction.value.toString(),
       data: Buffer.from(execution.transaction.data).toString(),
     })),
-  }
+  };
 }
 
 function serializeSimulationResult(result: {
-  actionOutputs: Record<number, { token?: string; amount: string }>
+  actionOutputs: Record<number, { token?: string; amount: string }>;
   simulations: Array<{
-    actionIndex: number
-    actionType: string
-    status: string
-    output?: { token?: string; amount: string }
-    failureReason?: string
+    actionIndex: number;
+    actionType: string;
+    status: string;
+    output?: { token?: string; amount: string };
+    failureReason?: string;
     transaction: {
-      receiver: Address
-      gasLimit: bigint
-      value: bigint
-      data: Uint8Array | Buffer
-    }
-  }>
+      receiver: Address;
+      gasLimit: bigint;
+      value: bigint;
+      data: Uint8Array | Buffer;
+    };
+  }>;
 }) {
   return {
     actionOutputs: result.actionOutputs,
     simulations: result.simulations.map((simulation) =>
       serializeSimulationAction(simulation),
     ),
-  }
+  };
 }
 
 function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
@@ -768,7 +1039,9 @@ function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
             ),
           }
         : {}),
-      ...(error.failedExecution.output ? { output: error.failedExecution.output } : {}),
+      ...(error.failedExecution.output
+        ? { output: error.failedExecution.output }
+        : {}),
       ...(error.failedExecution.outputComparison
         ? { outputComparison: error.failedExecution.outputComparison }
         : {}),
@@ -793,7 +1066,7 @@ function serializeSwapPlanExecutionError(error: SwapPlanExecutionError) {
           }).simulations,
         }
       : {}),
-  }
+  };
 }
 
 function serializeSwapPlanSimulationError(error: SwapPlanSimulationError) {
@@ -819,7 +1092,7 @@ function serializeSwapPlanSimulationError(error: SwapPlanSimulationError) {
       actionOutputs: error.actionOutputs,
       simulations: error.simulations,
     }).simulations,
-  }
+  };
 }
 
 function serializeSwapPlanPolicyError(error: SwapPlanPolicyError) {
@@ -834,84 +1107,224 @@ function serializeSwapPlanPolicyError(error: SwapPlanPolicyError) {
       deadlineSecondsSuggested: error.plan.deadlineSecondsSuggested,
       actionCount: error.plan.actions.length,
     },
-  }
+  };
 }
 
 function serializeSimulationAction(simulation: {
-  actionIndex: number
-  actionType: string
-  status: string
-  output?: { token?: string; amount: string }
-  failureReason?: string
+  actionIndex: number;
+  actionType: string;
+  status: string;
+  output?: { token?: string; amount: string };
+  failureReason?: string;
   transaction: {
-    receiver: Address
-    gasLimit: bigint
-    value: bigint
-    data: Uint8Array | Buffer
-  }
+    receiver: Address;
+    gasLimit: bigint;
+    value: bigint;
+    data: Uint8Array | Buffer;
+  };
 }) {
   return {
     actionIndex: simulation.actionIndex,
     actionType: simulation.actionType,
     status: simulation.status,
     ...(simulation.output ? { output: simulation.output } : {}),
-    ...(simulation.failureReason ? { failureReason: simulation.failureReason } : {}),
+    ...(simulation.failureReason
+      ? { failureReason: simulation.failureReason }
+      : {}),
     receiver: simulation.transaction.receiver.toBech32(),
     gasLimit: simulation.transaction.gasLimit.toString(),
     value: simulation.transaction.value.toString(),
     data: Buffer.from(simulation.transaction.data).toString(),
-  }
+  };
 }
 
 function parseCsvEnv(value: string | undefined): string[] | undefined {
   if (!value) {
-    return undefined
+    return undefined;
   }
 
   const parsed = value
-    .split(',')
+    .split(",")
     .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0)
+    .filter((segment) => segment.length > 0);
 
-  return parsed.length > 0 ? parsed : undefined
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 function parseOptionalInteger(value: string | undefined): number | undefined {
   if (!value) {
-    return undefined
+    return undefined;
   }
 
-  const parsed = Number.parseInt(value, 10)
+  const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) {
-    throw new Error(`Expected an integer environment value but received "${value}"`)
+    throw new Error(
+      `Expected an integer environment value but received "${value}"`,
+    );
   }
 
-  return parsed
+  return parsed;
+}
+
+function normalizeTransactionStatus(
+  tx: Awaited<ReturnType<ApiNetworkProvider["getTransaction"]>> | null,
+): {
+  status: string;
+  failureReason?: string;
+} {
+  if (!tx) {
+    return { status: "unknown" };
+  }
+
+  if (typeof tx.status === "string") {
+    return {
+      status: tx.status.toLowerCase(),
+      ...(typeof tx.receipt?.data === "string"
+        ? { failureReason: tx.receipt.data }
+        : {}),
+    };
+  }
+
+  if (typeof tx.status?.status === "string") {
+    return {
+      status: tx.status.status.toLowerCase(),
+      ...(typeof tx.receipt?.data === "string"
+        ? { failureReason: tx.receipt.data }
+        : {}),
+    };
+  }
+
+  if (tx.status?.isSuccessful?.()) {
+    return { status: "success" };
+  }
+
+  if (tx.status?.isPending?.()) {
+    return { status: "pending" };
+  }
+
+  return {
+    status: "unknown",
+    ...(typeof tx.receipt?.data === "string"
+      ? { failureReason: tx.receipt.data }
+      : {}),
+  };
+}
+
+function buildExplorerUrl(chainId: string | undefined, txHash: string): string {
+  switch (chainId) {
+    case "1":
+      return `https://explorer.multiversx.com/transactions/${txHash}`;
+    case "T":
+      return `https://testnet-explorer.multiversx.com/transactions/${txHash}`;
+    case "D":
+    default:
+      return `https://devnet-explorer.multiversx.com/transactions/${txHash}`;
+  }
+}
+
+function shouldClearPendingPaymentState(response: Response): boolean {
+  return response.ok || (response.status !== 402 && response.status < 500);
+}
+
+async function finalizeRun(parameters: {
+  request: ExampleRequest;
+  sender: string;
+  baseUrl: string;
+  receipt: string | null;
+  paymentTxHash: string | null;
+  executionPolicy?: SwapPlanExecutionPolicy;
+  result: Record<string, unknown>;
+}): Promise<void> {
+  const auditReport = buildPaidIntelAuditReport({
+    endpoint: parameters.request.kind,
+    request: parameters.request as unknown as Record<string, unknown>,
+    sender: parameters.sender,
+    facilitatorBaseUrl: parameters.baseUrl,
+    receipt: parameters.receipt,
+    paymentTxHash: parameters.paymentTxHash,
+    ...(parameters.executionPolicy
+      ? { executionPolicy: parameters.executionPolicy }
+      : {}),
+    result: parameters.result,
+  });
+  const reportPath = await persistPaidIntelAuditReport({
+    report: auditReport,
+    outputDir: process.env.MX_REPORT_DIR,
+    outputFile: process.env.MX_REPORT_FILE,
+  });
+  const { uploadedReport, uploadError } = shouldUploadAuditReport()
+    ? await uploadAuditReport({
+        auditReport,
+        baseUrl: parameters.baseUrl,
+      })
+    : { uploadedReport: undefined, uploadError: undefined };
+  const output = {
+    ...parameters.result,
+    ...(reportPath ? { reportPath } : {}),
+    ...(uploadedReport ? { uploadedReport } : {}),
+    ...(uploadError ? { uploadError } : {}),
+  };
+
+  console.log(JSON.stringify(output, null, 2));
+
+  if (auditReport.status === "error" || uploadError) {
+    process.exitCode = 1;
+  }
+}
+
+function serializePaymentLifecycleError(
+  endpoint: ExampleRequest["kind"],
+  error: PaymentPendingError | PaymentFailedError,
+): Record<string, unknown> {
+  const key =
+    error instanceof PaymentPendingError
+      ? "paymentPendingError"
+      : "paymentError";
+
+  return {
+    endpoint,
+    txHash: error.txHash,
+    [key]: {
+      message: error.message,
+      status: error.settlement.status,
+      observedStatus: error.settlement.observedStatus,
+      explorerUrl: error.settlement.explorerUrl,
+      apiUrl: error.settlement.apiUrl,
+      chainId: error.settlement.chainId,
+      timeoutMs: error.settlement.timeoutMs,
+      lastCheckedAt: error.settlement.lastCheckedAt,
+      ...(error.settlement.failureReason
+        ? { failureReason: error.settlement.failureReason }
+        : {}),
+      statePath: error.statePath,
+      resumedFromState: error.resumedFromState,
+    },
+  };
 }
 
 async function uploadAuditReport(parameters: {
-  auditReport: ReturnType<typeof buildPaidIntelAuditReport>
-  baseUrl: string
+  auditReport: ReturnType<typeof buildPaidIntelAuditReport>;
+  baseUrl: string;
 }): Promise<{
-  uploadedReport?: Awaited<ReturnType<typeof uploadPaidIntelAuditReport>>
-  uploadError?: { message: string }
+  uploadedReport?: Awaited<ReturnType<typeof uploadPaidIntelAuditReport>>;
+  uploadError?: { message: string };
 }> {
   try {
     const uploadedReport = await uploadPaidIntelAuditReport({
       report: parameters.auditReport,
       baseUrl: parameters.baseUrl,
       uploadUrl: process.env.MX_AUDIT_REPORT_URL,
-    })
-    return { uploadedReport }
+    });
+    return { uploadedReport };
   } catch (error) {
     return {
       uploadError: {
         message: error instanceof Error ? error.message : String(error),
       },
-    }
+    };
   }
 }
 
 function shouldUploadAuditReport(): boolean {
-  return process.env.MX_UPLOAD_AUDIT_REPORT === 'true'
+  return process.env.MX_UPLOAD_AUDIT_REPORT === "true";
 }

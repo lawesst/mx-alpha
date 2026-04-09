@@ -737,6 +737,13 @@ export class DiscoveryController {
                 description: 'Filter reports by execution status',
               },
               {
+                name: 'paymentTxHash',
+                in: 'query',
+                required: false,
+                schema: { type: 'string' },
+                description: 'Filter reports by payment transaction hash',
+              },
+              {
                 name: 'limit',
                 in: 'query',
                 required: false,
@@ -797,6 +804,14 @@ export class DiscoveryController {
                 schema: { type: 'string' },
                 description: 'Optionally scope the summary to a single endpoint',
               },
+              {
+                name: 'paymentTxHash',
+                in: 'query',
+                required: false,
+                schema: { type: 'string' },
+                description:
+                  'Optionally scope the summary to a single payment transaction hash',
+              },
             ],
             responses: {
               '200': {
@@ -806,6 +821,36 @@ export class DiscoveryController {
                     schema: { type: 'object' },
                   },
                 },
+              },
+            },
+          },
+        },
+        '/audit-reports/by-payment/{paymentTxHash}': {
+          get: {
+            operationId: 'getAuditReportByPaymentTxHash',
+            summary: 'Fetch the latest audit report for a payment transaction hash',
+            description:
+              'Returns the latest stored audit report that references a given payment transaction hash.',
+            parameters: [
+              {
+                name: 'paymentTxHash',
+                in: 'path',
+                required: true,
+                schema: { type: 'string' },
+                description: 'Payment transaction hash to look up',
+              },
+            ],
+            responses: {
+              '200': {
+                description: 'Stored audit report detail',
+                content: {
+                  'application/json': {
+                    schema: { type: 'object' },
+                  },
+                },
+              },
+              '404': {
+                description: 'Audit report not found for the payment transaction hash',
               },
             },
           },

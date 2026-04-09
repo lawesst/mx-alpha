@@ -31,8 +31,11 @@ This repo packages the working prototype we built on top of the MultiversX blog 
 - Richer execution reporting that compares preflight simulation with real execution per action
 - Optional JSON audit export for paid runs, dry-runs, and execution failures
 - Optional one-step audit upload from the example client back into the facilitator
+- Resumable pending-payment state so slow devnet confirmations do not trigger duplicate payments on rerun
 - Report indexing that summarizes many saved audit runs into JSON, Markdown, and static HTML artifacts
 - Facilitator-side audit ingestion with list, detail, and summary APIs for stored paid-run reports
+- Audit lookup by payment transaction hash
+- A root smoke runner that starts the facilitator, retries pending payments, uploads the audit report, and verifies ingestion
 
 ## What The Product Does
 
@@ -53,6 +56,7 @@ mx-alpha/
   Makefile
   mpp-facilitator-mvx/
   mppx-multiversx/
+  scripts/
 ```
 
 ## Quick Start
@@ -75,7 +79,7 @@ Then install and start the facilitator:
 
 ```bash
 cd ../mpp-facilitator-mvx
-npm install --legacy-peer-deps
+npm install
 PORT=3000 \
 DATABASE_URL=file:./dev.db \
 MPP_SECRET_KEY=local-dev-secret \
@@ -86,6 +90,8 @@ MPP_CHAIN_ID=D \
 MPP_TOKEN_DECIMALS=18 \
 npm run start
 ```
+
+The facilitator start scripts build the local SDK first and bootstrap the SQLite schema at runtime, so a fresh local database no longer needs manual Prisma setup before the first boot.
 
 Run the paid client example:
 
@@ -139,6 +145,8 @@ MX_UPLOAD_AUDIT_REPORT=true \
 npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
 ```
 
+When devnet settlement is slow, rerun the same command and the example will resume from the saved pending payment state instead of broadcasting a new payment. By default it stores that state under `./.paid-intel-state`, and you can override it with `MX_PAYMENT_STATE_DIR` or `MX_PAYMENT_STATE_FILE`.
+
 Index the saved reports:
 
 ```bash
@@ -156,6 +164,15 @@ Or build a report index from the repo root:
 
 ```bash
 make report-index
+```
+
+Run the full local smoke flow from the repo root:
+
+```bash
+MX_SMOKE_PEM_PATH=/absolute/path/to/payer.pem \
+MX_SMOKE_RESOURCE_ADDRESS=erd1... \
+MX_SMOKE_RECIPIENT=erd1... \
+make smoke-paid-upload
 ```
 
 Ingest a saved audit report into the facilitator:
@@ -180,7 +197,9 @@ curl \
 - the SDK can also reject risky or unexpected plans before signing by enforcing an execution policy over strategy, receivers, action types, and suggested route limits.
 - the example runner performs pre-broadcast simulation by default when live execution is enabled, unless `MX_SKIP_PREBROADCAST_SIMULATION=true` is set.
 - the example runner can now persist a JSON audit report with the payment receipt, request metadata, dry-run details, and execution outcome when `MX_REPORT_DIR` or `MX_REPORT_FILE` is set.
+- the example runner now persists resumable pending-payment state under `./.paid-intel-state` unless you override it with `MX_PAYMENT_STATE_DIR` or `MX_PAYMENT_STATE_FILE`.
 - the repo now includes a small indexer that scans saved reports and writes `index.json`, `latest-success.json`, and `summary.md` so repeated runs are easier to review.
 - the report indexer now also writes a static `index.html` dashboard for quick browser-based review.
+- the facilitator can now look up the latest stored audit report for a given payment transaction via `GET /audit-reports/by-payment/<txHash>`.
 - unwrap templates are built from the guaranteed minimum output, so clients may still want to adjust the final unwrap amount after execution if more WEGLD is received.
 - This repo is intended as a buildable prototype rather than a polished production release.

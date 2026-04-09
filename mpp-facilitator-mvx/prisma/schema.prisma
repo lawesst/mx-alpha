@@ -60,4 +60,5 @@ model AuditReport {
 
   @@index([endpoint, generatedAt])
   @@index([status, generatedAt])
+  @@index([paymentTxHash, generatedAt])
 }

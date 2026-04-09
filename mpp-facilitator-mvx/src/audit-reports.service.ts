@@ -64,6 +64,7 @@ export type StoredPaidIntelAuditReportList = {
   generatedAt: string;
   filters: {
     endpoint?: string;
+    paymentTxHash?: string;
     status?: PaidIntelAuditReportStatus;
     limit: number;
   };
@@ -77,6 +78,7 @@ export type StoredPaidIntelAuditReportSummaryResponse = {
   generatedAt: string;
   filters: {
     endpoint?: string;
+    paymentTxHash?: string;
   };
   totals: {
     reports: number;
@@ -122,6 +124,7 @@ export class AuditReportsService {
 
   async listReports(parameters: {
     endpoint?: string;
+    paymentTxHash?: string;
     status?: PaidIntelAuditReportStatus;
     limit?: number;
   }): Promise<StoredPaidIntelAuditReportList> {
@@ -138,6 +141,9 @@ export class AuditReportsService {
       generatedAt: new Date().toISOString(),
       filters: {
         ...(parameters.endpoint ? { endpoint: parameters.endpoint } : {}),
+        ...(parameters.paymentTxHash
+          ? { paymentTxHash: parameters.paymentTxHash }
+          : {}),
         ...(parameters.status ? { status: parameters.status } : {}),
         limit,
       },
@@ -148,6 +154,7 @@ export class AuditReportsService {
 
   async getSummary(parameters: {
     endpoint?: string;
+    paymentTxHash?: string;
   }): Promise<StoredPaidIntelAuditReportSummaryResponse> {
     const records = await this.prisma.auditReport.findMany({
       where: buildWhere(parameters),
@@ -163,6 +170,9 @@ export class AuditReportsService {
       generatedAt: new Date().toISOString(),
       filters: {
         ...(parameters.endpoint ? { endpoint: parameters.endpoint } : {}),
+        ...(parameters.paymentTxHash
+          ? { paymentTxHash: parameters.paymentTxHash }
+          : {}),
       },
       totals: {
         reports: reports.length,
@@ -180,6 +190,23 @@ export class AuditReportsService {
 
     if (!record) {
       throw new NotFoundException(`Audit report "${id}" was not found`);
+    }
+
+    return toStoredReportDetail(record);
+  }
+
+  async getLatestReportByPaymentTxHash(
+    paymentTxHash: string,
+  ): Promise<StoredPaidIntelAuditReportDetail> {
+    const record = await this.prisma.auditReport.findFirst({
+      where: { paymentTxHash },
+      orderBy: [{ generatedAt: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    if (!record) {
+      throw new NotFoundException(
+        `Audit report for payment transaction "${paymentTxHash}" was not found`,
+      );
     }
 
     return toStoredReportDetail(record);
@@ -244,10 +271,14 @@ function parsePayment(value: unknown): PaidIntelAuditReport['payment'] {
 
 function buildWhere(parameters: {
   endpoint?: string;
+  paymentTxHash?: string;
   status?: PaidIntelAuditReportStatus;
 }): Prisma.AuditReportWhereInput {
   return {
     ...(parameters.endpoint ? { endpoint: parameters.endpoint } : {}),
+    ...(parameters.paymentTxHash
+      ? { paymentTxHash: parameters.paymentTxHash }
+      : {}),
     ...(parameters.status ? { status: parameters.status } : {}),
   };
 }

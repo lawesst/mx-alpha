@@ -14,6 +14,7 @@ A high-performance facilitator microservice for the **Mobile Payment Protocol (M
 - **Transaction Templates**: `swap-plan` now embeds smart-contract execute templates for supported pair hops, plus optional EGLD wrap/unwrap templates when a WEGLD swap contract address is configured.
 - **Dynamic Chaining**: downstream swap hops and unwrap steps can reference the previous action's output amount instead of hardcoding only one estimated value.
 - **Audit Ingestion**: Stores paid intel audit reports from the example client and exposes list, detail, and summary endpoints for operators or agents.
+- **Deterministic SQLite Boot**: Bootstraps the required SQLite tables and indexes at startup, even on a fresh or drifted local database.
 - **Security**: HMAC-SHA256 bound challenge IDs, rate limiting, and TTL-based challenge expiration.
 - **Production Ready**: Full test coverage and environment-driven configuration.
 
@@ -21,46 +22,51 @@ A high-performance facilitator microservice for the **Mobile Payment Protocol (M
 
 The service is configured via environment variables:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Listening port for the application | `3000` |
-| `MPP_SECRET_KEY` | **Required**. Secret key for signing challenge IDs | N/A |
-| `MPP_DEFAULT_CURRENCY` | Default token ticker (e.g., EGLD, WEGLD-abd123) | `EGLD` |
-| `MPP_CHAIN_ID` | MultiversX Chain ID (D=Devnet, T=Testnet, 1=Mainnet) | `D` |
-| `MPP_TOKEN_DECIMALS` | Decimals for the payment token | `18` |
-| `MPP_REALM` | Service identifier for the WWW-Authenticate header | `agentic-payments-mvx` |
-| `MPP_RELAY_RATE_LIMIT` | Max requests per window for relayed calls | `100` |
-| `MPP_RECIPIENT` | **Required for paid intel endpoints.** Payment recipient bech32 address | N/A |
-| `MPP_TOKEN_RISK_PRICE` | Human-readable price for `GET /intel/token-risk` | `0.05` |
-| `MPP_WALLET_PROFILE_PRICE` | Human-readable price for `GET /intel/wallet-profile` | `0.10` |
-| `MPP_SWAP_SIM_PRICE` | Human-readable price for `GET /intel/swap-sim` | `0.07` |
-| `MPP_SWAP_PLAN_PRICE` | Human-readable price for `GET /intel/swap-plan` | `0.12` |
-| `MPP_WEGLD_SWAP_ADDRESS` | Optional WEGLD swap contract address used to attach executable `wrap-egld` / `unwrap-egld` templates | N/A |
-| `MPP_WEGLD_SWAP_GAS_LIMIT` | Gas limit used for WEGLD wrap and unwrap templates | `10000000` |
-| `MVX_ANALYTICS_API_URL` | Base URL for public analytics lookups | `https://api.multiversx.com` |
+| Variable                   | Description                                                                                          | Default                      |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `PORT`                     | Listening port for the application                                                                   | `3000`                       |
+| `MPP_SECRET_KEY`           | **Required**. Secret key for signing challenge IDs                                                   | N/A                          |
+| `MPP_DEFAULT_CURRENCY`     | Default token ticker (e.g., EGLD, WEGLD-abd123)                                                      | `EGLD`                       |
+| `MPP_CHAIN_ID`             | MultiversX Chain ID (D=Devnet, T=Testnet, 1=Mainnet)                                                 | `D`                          |
+| `MPP_TOKEN_DECIMALS`       | Decimals for the payment token                                                                       | `18`                         |
+| `MPP_REALM`                | Service identifier for the WWW-Authenticate header                                                   | `agentic-payments-mvx`       |
+| `MPP_RELAY_RATE_LIMIT`     | Max requests per window for relayed calls                                                            | `100`                        |
+| `MPP_RECIPIENT`            | **Required for paid intel endpoints.** Payment recipient bech32 address                              | N/A                          |
+| `MPP_TOKEN_RISK_PRICE`     | Human-readable price for `GET /intel/token-risk`                                                     | `0.05`                       |
+| `MPP_WALLET_PROFILE_PRICE` | Human-readable price for `GET /intel/wallet-profile`                                                 | `0.10`                       |
+| `MPP_SWAP_SIM_PRICE`       | Human-readable price for `GET /intel/swap-sim`                                                       | `0.07`                       |
+| `MPP_SWAP_PLAN_PRICE`      | Human-readable price for `GET /intel/swap-plan`                                                      | `0.12`                       |
+| `MPP_WEGLD_SWAP_ADDRESS`   | Optional WEGLD swap contract address used to attach executable `wrap-egld` / `unwrap-egld` templates | N/A                          |
+| `MPP_WEGLD_SWAP_GAS_LIMIT` | Gas limit used for WEGLD wrap and unwrap templates                                                   | `10000000`                   |
+| `MVX_ANALYTICS_API_URL`    | Base URL for public analytics lookups                                                                | `https://api.multiversx.com` |
 
 ## Discovery Endpoint
 
 The service automatically serves payment metadata via:
+
 - `GET /openapi.json`
 - `GET /intel/token-risk?token=<identifier>`
 - `GET /intel/wallet-profile?address=<bech32>`
 - `GET /intel/swap-sim?from=<asset>&to=<asset>&amount=<decimal>`
 - `GET /intel/swap-plan?from=<asset>&to=<asset>&amount=<decimal>`
 - `POST /audit-reports`
-- `GET /audit-reports?endpoint=<name>&status=<success|error>&limit=<n>`
-- `GET /audit-reports/summary`
+- `GET /audit-reports?endpoint=<name>&paymentTxHash=<hash>&status=<success|error>&limit=<n>`
+- `GET /audit-reports/summary?paymentTxHash=<hash>`
+- `GET /audit-reports/by-payment/<txHash>`
 - `GET /audit-reports/<id>`
 
 This file is used by AI agents to understand how to pay for services using MPP.
 
 The audit report endpoints are useful after running the example client with `MX_REPORT_DIR` or `MX_REPORT_FILE` in [`mppx-multiversx`](../mppx-multiversx). They let you ingest those JSON artifacts into the facilitator and query the latest outcomes centrally.
 
+The facilitator start scripts now build the local [`mppx-multiversx`](../mppx-multiversx) package first, and the service boot path creates any missing local SQLite tables and indexes automatically. That means a fresh local `DATABASE_URL=file:...` no longer needs a manual migration step before development starts.
+
 ## Local Devnet Smoke Test
 
 Start the facilitator with a recipient wallet and devnet settings:
 
 ```bash
+npm install
 PORT=3000 \
 DATABASE_URL=file:./dev.db \
 MPP_SECRET_KEY=local-dev-secret \
@@ -82,10 +88,22 @@ npm run example:paid-intel -- wallet-profile erd1...
 ```
 
 The expected flow is:
+
 - the first request returns `402 Payment Required`
 - the client broadcasts a tagged MultiversX payment with `mpp:<challengeId>`
 - the facilitator verifies the onchain payment and returns `200 OK`
 - the response includes a `Payment-Receipt` header
+
+If devnet finality is slow, rerunning the same example command now resumes from the saved pending payment state instead of broadcasting a duplicate payment.
+
+From the repo root, you can also run the end-to-end smoke flow with:
+
+```bash
+MX_SMOKE_PEM_PATH=/absolute/path/to/payer.pem \
+MX_SMOKE_RESOURCE_ADDRESS=erd1... \
+MX_SMOKE_RECIPIENT=erd1... \
+make smoke-paid-upload
+```
 
 ## License
 

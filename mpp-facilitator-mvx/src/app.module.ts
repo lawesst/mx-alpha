@@ -14,6 +14,7 @@ import { IntelController } from './intel.controller';
 import { IntelService } from './intel.service';
 import { AuditReportsController } from './audit-reports.controller';
 import { AuditReportsService } from './audit-reports.service';
+import { DatabaseBootstrapService } from './database-bootstrap.service';
 
 @Module({
   imports: [],
@@ -35,6 +36,7 @@ import { AuditReportsService } from './audit-reports.service';
     PaymentGatewayService,
     IntelService,
     AuditReportsService,
+    DatabaseBootstrapService,
   ],
 })
 export class AppModule {}

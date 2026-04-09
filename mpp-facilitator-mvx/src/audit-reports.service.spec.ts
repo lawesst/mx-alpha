@@ -8,6 +8,7 @@ describe('AuditReportsService', () => {
     auditReport: {
       create: jest.Mock;
       findMany: jest.Mock;
+      findFirst: jest.Mock;
       findUnique: jest.Mock;
     };
   };
@@ -17,6 +18,7 @@ describe('AuditReportsService', () => {
       auditReport: {
         create: jest.fn(),
         findMany: jest.fn(),
+        findFirst: jest.fn(),
         findUnique: jest.fn(),
       },
     };
@@ -275,6 +277,32 @@ describe('AuditReportsService', () => {
         errorKinds: [],
       },
     ]);
+  });
+
+  it('looks up the latest report by payment transaction hash', async () => {
+    const record = makeAuditReportRecord({
+      id: 'report-by-payment',
+      endpoint: 'wallet-profile',
+      paymentTxHash: 'payment-hash-123',
+      generatedAt: new Date('2026-04-07T12:00:00.000Z'),
+    });
+
+    prisma.auditReport.findFirst.mockResolvedValue(record);
+
+    const result = await service.getLatestReportByPaymentTxHash(
+      'payment-hash-123',
+    );
+
+    expect(prisma.auditReport.findFirst).toHaveBeenCalledWith({
+      where: { paymentTxHash: 'payment-hash-123' },
+      orderBy: [{ generatedAt: 'desc' }, { createdAt: 'desc' }],
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'report-by-payment',
+        paymentTxHash: 'payment-hash-123',
+      }),
+    );
   });
 });
 

@@ -24,19 +24,39 @@ export class AuditReportsController {
   @Get()
   async listReports(
     @Query('endpoint') endpoint?: string,
+    @Query('paymentTxHash') paymentTxHash?: string,
     @Query('status') status?: string,
     @Query('limit') limit?: string,
   ) {
     return this.auditReportsService.listReports({
       endpoint,
+      paymentTxHash,
       status: parseStatus(status),
       limit: parseLimit(limit),
     });
   }
 
   @Get('summary')
-  async getSummary(@Query('endpoint') endpoint?: string) {
-    return this.auditReportsService.getSummary({ endpoint });
+  async getSummary(
+    @Query('endpoint') endpoint?: string,
+    @Query('paymentTxHash') paymentTxHash?: string,
+  ) {
+    return this.auditReportsService.getSummary({ endpoint, paymentTxHash });
+  }
+
+  @Get('by-payment/:paymentTxHash')
+  async getLatestReportByPaymentTxHash(
+    @Param('paymentTxHash') paymentTxHash: string,
+  ) {
+    if (!paymentTxHash) {
+      throw new BadRequestException(
+        'Path parameter "paymentTxHash" is required',
+      );
+    }
+
+    return this.auditReportsService.getLatestReportByPaymentTxHash(
+      paymentTxHash,
+    );
   }
 
   @Get(':id')

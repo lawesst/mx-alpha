@@ -21,18 +21,18 @@ npm install mppx-multiversx
 ### Server-side Initialization
 
 ```typescript
-import { Mppx } from 'mppx/server';
-import { multiversx } from 'mppx-multiversx/server';
+import { Mppx } from "mppx/server";
+import { multiversx } from "mppx-multiversx/server";
 
 const mvxMethod = multiversx({
   decimals: 18,
-  chainId: 'D', // Devnet
-  currency: 'EGLD',
+  chainId: "D", // Devnet
+  currency: "EGLD",
   verifyTransaction: async ({ txHash, sender, amount, challengeId }) => {
     // Your verification logic here
     // Verify txHash on the blockchain, compare sender, amount, etc.
     return true;
-  }
+  },
 });
 
 const mpp = Mppx.create({
@@ -44,24 +44,30 @@ const mpp = Mppx.create({
 ### Client-side Usage
 
 ```typescript
-import { Mppx } from 'mppx/client';
-import { multiversx } from 'mppx-multiversx/client';
+import { Mppx } from "mppx/client";
+import { multiversx } from "mppx-multiversx/client";
 
 const client = Mppx.create({
   polyfill: false,
   methods: [
     multiversx.charge({
-      signAndSendTransaction: async ({ amount, challenge, currency, recipient, sender }) => {
+      signAndSendTransaction: async ({
+        amount,
+        challenge,
+        currency,
+        recipient,
+        sender,
+      }) => {
         // Construct, sign, and broadcast the MultiversX transfer tagged with:
         // `mpp:${challenge.id}`
-        return { txHash: '0x...', sender };
-      }
-    })
-  ]
+        return { txHash: "0x...", sender };
+      },
+    }),
+  ],
 });
 
-const response = await client.fetch('https://api.example.com/paid-resource', {
-  context: { sender: 'erd1...' },
+const response = await client.fetch("https://api.example.com/paid-resource", {
+  context: { sender: "erd1..." },
 });
 ```
 
@@ -94,10 +100,12 @@ npm run example:paid-intel -- swap-plan USDC-c76f1f RIDE-7d18e9 25
 ```
 
 See [`examples/paid-intel.ts`](./examples/paid-intel.ts) for the full flow:
+
 - calls the facilitator endpoint and waits for a `402 Payment Required` challenge
 - creates the payment credential with `Mppx.create(...).createCredential(...)`
 - signs a tagged EGLD or ESDT transfer with `mpp:<challengeId>`
 - waits for the transaction to settle onchain before retrying
+- persists resumable pending-payment state so reruns can reuse the same credential and tx hash
 - prints the JSON report plus `Payment-Receipt`
 
 For live devnet testing, you can increase the wait budget if your transaction confirms slowly:
@@ -108,6 +116,13 @@ MX_INTEL_BASE_URL=http://localhost:3100 \
 MX_SETTLEMENT_TIMEOUT_MS=90000 \
 npm run example:paid-intel -- wallet-profile erd1...
 ```
+
+If the transaction still has not settled when the timeout expires, rerun the same command. The example now stores resumable pending-payment state under `./.paid-intel-state` by default and resumes from the saved `txHash` and credential instead of paying again.
+
+Override that storage with:
+
+- `MX_PAYMENT_STATE_DIR`
+- `MX_PAYMENT_STATE_FILE`
 
 The `swap-sim` example now surfaces xExchange-aware route metadata when the facilitator can find live MEX pairs, including bridged routes through `WEGLD-bd4d79`. The `swap-plan` example builds on that and returns an execution-oriented action list with pair addresses, min-output targets, and slippage suggestions.
 
@@ -130,6 +145,7 @@ If you want the same run to send that audit record back to the facilitator, set 
 The repository also includes `example:report-index`, which scans a directory of saved audit reports, validates them, and writes summary artifacts such as `index.json`, `latest-success.json`, `summary.md`, and a static `index.html` dashboard.
 
 For pre-broadcast safety checks, the client package also accepts an `executionPolicy` on `buildTransactionsFromSwapPlan()` and `executeSwapPlan()`. This can enforce limits such as:
+
 - maximum action count
 - allowed action types
 - allowed contract receivers
@@ -179,6 +195,17 @@ MX_EXECUTE_SWAP_PLAN=true \
 MX_REPORT_DIR=./reports \
 MX_UPLOAD_AUDIT_REPORT=true \
 npm run example:paid-intel -- swap-plan EGLD RIDE-7d18e9 1.25
+```
+
+You can use the same pending-payment state alongside audit uploads:
+
+```bash
+MX_PEM_PATH=./wallet.pem \
+MX_INTEL_BASE_URL=http://localhost:3100 \
+MX_REPORT_DIR=./reports \
+MX_UPLOAD_AUDIT_REPORT=true \
+MX_PAYMENT_STATE_FILE=./.paid-intel-state/wallet-profile.json \
+npm run example:paid-intel -- wallet-profile erd1...
 ```
 
 To index previously saved reports:
