@@ -150,6 +150,32 @@ describe('DiscoveryController', () => {
     expect(paymentInfo.defaultCurrency).toBe('EGLD');
   });
 
+  it('should document retryable paid-intel verification details on 402 responses', () => {
+    let responseBody: Record<string, any> = {};
+    const mockRes = {
+      setHeader: () => {},
+      status: () => ({
+        json: (body: any) => {
+          responseBody = body;
+        },
+      }),
+    } as unknown as Response;
+
+    controller.getOpenApiSpec(mockRes);
+
+    const paidResponse =
+      responseBody.paths['/intel/token-risk'].get.responses['402'];
+    expect(paidResponse.headers['Retry-After']).toBeDefined();
+    expect(
+      paidResponse.content['application/problem+json'].schema.properties
+        .verificationState,
+    ).toBeDefined();
+    expect(
+      paidResponse.content['application/problem+json'].schema.properties
+        .verification,
+    ).toBeDefined();
+  });
+
   it('should expose challenge inspection diagnostics', () => {
     let responseBody: Record<string, any> = {};
     const mockRes = {

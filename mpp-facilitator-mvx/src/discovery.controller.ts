@@ -16,6 +16,50 @@ export class DiscoveryController {
     const chainId = process.env.MPP_CHAIN_ID || 'D';
     const realm = process.env.MPP_REALM || 'agentic-payments-mvx';
     const baseUrl = process.env.MPP_BASE_URL || 'http://localhost:3000';
+    const paidIntelProblemHeaders = {
+      'WWW-Authenticate': {
+        schema: { type: 'string' },
+      },
+      'Retry-After': {
+        schema: { type: 'string' },
+        description:
+          'Present when the facilitator is already tracking a payment attempt and recommends retrying with the same credential.',
+      },
+    };
+    const paidIntelProblemSchema = {
+      type: 'object',
+      properties: {
+        type: { type: 'string' },
+        title: { type: 'string' },
+        status: { type: 'integer' },
+        detail: { type: 'string' },
+        challengeId: { type: 'string', nullable: true },
+        challenge: { type: 'string' },
+        retryable: { type: 'boolean' },
+        retryAfterSeconds: { type: 'integer' },
+        verificationState: {
+          type: 'string',
+          enum: ['pending', 'verified', 'failed'],
+        },
+        verification: {
+          type: 'object',
+          nullable: true,
+          properties: {
+            challengeStatus: { type: 'string' },
+            attempts: { type: 'integer' },
+            lastCheckedAt: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+            },
+            lastStatus: { type: 'string', nullable: true },
+            lastError: { type: 'string', nullable: true },
+            observedTxStatus: { type: 'string', nullable: true },
+            txHash: { type: 'string', nullable: true },
+          },
+        },
+      },
+    };
 
     const openApiSpec = {
       openapi: '3.1.0',
@@ -542,22 +586,10 @@ export class DiscoveryController {
               },
               '402': {
                 description: 'Payment Required',
-                headers: {
-                  'WWW-Authenticate': {
-                    schema: { type: 'string' },
-                  },
-                },
+                headers: paidIntelProblemHeaders,
                 content: {
                   'application/problem+json': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        type: { type: 'string' },
-                        title: { type: 'string' },
-                        status: { type: 'integer' },
-                        detail: { type: 'string' },
-                      },
-                    },
+                    schema: paidIntelProblemSchema,
                   },
                 },
               },
@@ -604,22 +636,10 @@ export class DiscoveryController {
               },
               '402': {
                 description: 'Payment Required',
-                headers: {
-                  'WWW-Authenticate': {
-                    schema: { type: 'string' },
-                  },
-                },
+                headers: paidIntelProblemHeaders,
                 content: {
                   'application/problem+json': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        type: { type: 'string' },
-                        title: { type: 'string' },
-                        status: { type: 'integer' },
-                        detail: { type: 'string' },
-                      },
-                    },
+                    schema: paidIntelProblemSchema,
                   },
                 },
               },
@@ -680,22 +700,10 @@ export class DiscoveryController {
               },
               '402': {
                 description: 'Payment Required',
-                headers: {
-                  'WWW-Authenticate': {
-                    schema: { type: 'string' },
-                  },
-                },
+                headers: paidIntelProblemHeaders,
                 content: {
                   'application/problem+json': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        type: { type: 'string' },
-                        title: { type: 'string' },
-                        status: { type: 'integer' },
-                        detail: { type: 'string' },
-                      },
-                    },
+                    schema: paidIntelProblemSchema,
                   },
                 },
               },
@@ -756,22 +764,10 @@ export class DiscoveryController {
               },
               '402': {
                 description: 'Payment Required',
-                headers: {
-                  'WWW-Authenticate': {
-                    schema: { type: 'string' },
-                  },
-                },
+                headers: paidIntelProblemHeaders,
                 content: {
                   'application/problem+json': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        type: { type: 'string' },
-                        title: { type: 'string' },
-                        status: { type: 'integer' },
-                        detail: { type: 'string' },
-                      },
-                    },
+                    schema: paidIntelProblemSchema,
                   },
                 },
               },

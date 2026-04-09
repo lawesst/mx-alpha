@@ -9,6 +9,7 @@ import type {
 } from 'express';
 import { MppxService } from './mppx.service';
 import { StorageService } from './storage.service';
+import type { SettlementRecord } from './storage.service';
 
 type ChargeOptions<T> = {
   amount: string;
@@ -17,6 +18,29 @@ type ChargeOptions<T> = {
   opaque?: Record<string, string>;
   source?: string;
   onAuthorized: () => Promise<T>;
+};
+
+type VerificationState = 'pending' | 'verified' | 'failed';
+
+type PaymentProblemDetail = {
+  type: string;
+  title: string;
+  status: 402;
+  detail: string;
+  challengeId?: string;
+  challenge: string;
+  retryable?: boolean;
+  retryAfterSeconds?: number;
+  verificationState?: VerificationState;
+  verification?: {
+    challengeStatus: string;
+    attempts: number;
+    lastCheckedAt: string | null;
+    lastStatus: string | null;
+    lastError: string | null;
+    observedTxStatus: string | null;
+    txHash: string | null;
+  };
 };
 
 @Injectable()
@@ -96,12 +120,20 @@ export class PaymentGatewayService {
     const expires =
       this.extractQuotedValue(challengeHeader, 'expires') ||
       this.extractQuotedValue(challenge, 'expires');
+    let storedChallenge: SettlementRecord | null = null;
 
     if (challengeId) {
+      const existingChallenge = await this.storageService.get(challengeId);
       await this.storageService.save({
         id: challengeId,
-        txHash: '',
-        payer: options.source || '',
+        ...(existingChallenge
+          ? {}
+          : {
+              txHash: '',
+              payer: options.source || '',
+              status: 'pending',
+              createdAt: new Date(),
+            }),
         receiver: options.recipient,
         amount: this.parseUnits(
           options.amount,
@@ -109,28 +141,30 @@ export class PaymentGatewayService {
         ),
         currency: process.env.MPP_DEFAULT_CURRENCY || 'EGLD',
         chainId: process.env.MPP_CHAIN_ID || 'D',
-        status: 'pending',
-        createdAt: new Date(),
         updatedAt: new Date(),
         expiresAt: expires ? new Date(expires) : null,
         opaque: options.opaque ? this.stableStringify(options.opaque) : null,
         digest: options.digest || null,
         source: options.source || null,
       });
+      storedChallenge = await this.storageService.get(challengeId);
     } else {
       this.logger.warn('Unable to persist challenge because no challenge ID was found');
     }
 
-    res.status(402).json({
-      type: 'https://mpp.dev/errors/payment-required',
-      title: 'Payment Required',
-      status: 402,
-      detail: `This resource requires a payment of ${options.amount} ${
-        process.env.MPP_DEFAULT_CURRENCY || 'EGLD'
-      }.`,
+    const problemDetail = this.buildPaymentRequiredProblemDetail({
+      amount: options.amount,
+      currency: process.env.MPP_DEFAULT_CURRENCY || 'EGLD',
       challengeId,
       challenge,
+      challengeRecord: storedChallenge,
     });
+
+    if (problemDetail.retryAfterSeconds) {
+      res.setHeader('Retry-After', String(problemDetail.retryAfterSeconds));
+    }
+
+    res.status(402).json(problemDetail);
   }
 
   private extractQuotedValue(input: string, key: string): string | undefined {
@@ -142,6 +176,128 @@ export class PaymentGatewayService {
     const [whole = '0', fraction = ''] = amount.split('.');
     const paddedFraction = fraction.padEnd(decimals, '0').slice(0, decimals);
     return BigInt(whole + paddedFraction).toString();
+  }
+
+  private buildPaymentRequiredProblemDetail(parameters: {
+    amount: string;
+    currency: string;
+    challengeId?: string;
+    challenge: string;
+    challengeRecord?: SettlementRecord | null;
+  }): PaymentProblemDetail {
+    const baseDetail: PaymentProblemDetail = {
+      type: 'https://mpp.dev/errors/payment-required',
+      title: 'Payment Required',
+      status: 402,
+      detail: `This resource requires a payment of ${parameters.amount} ${parameters.currency}.`,
+      challengeId: parameters.challengeId,
+      challenge: parameters.challenge,
+    };
+    const challengeRecord = parameters.challengeRecord;
+
+    if (!challengeRecord || challengeRecord.verificationAttempts === 0) {
+      return baseDetail;
+    }
+
+    const verification = this.serializeVerificationDetails(challengeRecord);
+    const retryAfterSeconds = this.getRetryAfterSeconds();
+
+    if (this.isVerifiedVerificationState(challengeRecord)) {
+      return {
+        ...baseDetail,
+        type: 'https://mpp.dev/errors/payment-verification-catch-up',
+        title: 'Payment Received, Authorization Catching Up',
+        detail:
+          'The facilitator has already verified a payment for this challenge. ' +
+          'Retry the same request with the same credential shortly instead of paying again.',
+        retryable: true,
+        retryAfterSeconds,
+        verificationState: 'verified',
+        verification,
+      };
+    }
+
+    if (this.isPendingVerificationState(challengeRecord)) {
+      return {
+        ...baseDetail,
+        type: 'https://mpp.dev/errors/payment-verification-pending',
+        title: 'Payment Verification Pending',
+        detail:
+          'A payment attempt is already being tracked for this challenge, but verification is still catching up. ' +
+          'Retry the same request with the same credential instead of paying again.',
+        retryable: true,
+        retryAfterSeconds,
+        verificationState: 'pending',
+        verification,
+      };
+    }
+
+    return {
+      ...baseDetail,
+      type: 'https://mpp.dev/errors/payment-verification-failed',
+      title: 'Previous Payment Attempt Could Not Be Verified',
+      detail: challengeRecord.lastVerificationError
+        ? `The last payment attempt for this challenge could not be verified: ${challengeRecord.lastVerificationError}`
+        : 'The last payment attempt for this challenge could not be verified. Submit a corrected payment or request a new challenge.',
+      verificationState: 'failed',
+      verification,
+    };
+  }
+
+  private serializeVerificationDetails(
+    challengeRecord: SettlementRecord,
+  ): NonNullable<PaymentProblemDetail['verification']> {
+    return {
+      challengeStatus: challengeRecord.status,
+      attempts: challengeRecord.verificationAttempts,
+      lastCheckedAt: challengeRecord.lastVerificationAt
+        ? challengeRecord.lastVerificationAt.toISOString()
+        : null,
+      lastStatus: challengeRecord.lastVerificationStatus,
+      lastError: challengeRecord.lastVerificationError,
+      observedTxStatus: challengeRecord.lastObservedTxStatus,
+      txHash:
+        challengeRecord.lastVerificationTxHash || challengeRecord.txHash || null,
+    };
+  }
+
+  private isVerifiedVerificationState(
+    challengeRecord: SettlementRecord,
+  ): boolean {
+    return (
+      challengeRecord.status === 'completed' ||
+      challengeRecord.lastVerificationStatus === 'success' ||
+      challengeRecord.lastVerificationStatus === 'cached-success'
+    );
+  }
+
+  private isPendingVerificationState(
+    challengeRecord: SettlementRecord,
+  ): boolean {
+    const pendingStatuses = new Set(['tx-pending', 'tx-not-found']);
+    const pendingObservedStatuses = new Set(['pending', 'not-found']);
+
+    return (
+      (challengeRecord.lastVerificationStatus
+        ? pendingStatuses.has(challengeRecord.lastVerificationStatus)
+        : false) ||
+      (challengeRecord.lastObservedTxStatus
+        ? pendingObservedStatuses.has(challengeRecord.lastObservedTxStatus)
+        : false)
+    );
+  }
+
+  private getRetryAfterSeconds(): number {
+    const value = parseInt(
+      process.env.MPP_VERIFICATION_RETRY_AFTER_SECONDS || '3',
+      10,
+    );
+
+    if (Number.isNaN(value) || value <= 0) {
+      return 3;
+    }
+
+    return value;
   }
 
   private stableStringify(value: unknown): string {

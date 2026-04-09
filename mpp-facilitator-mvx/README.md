@@ -38,6 +38,7 @@ The service is configured via environment variables:
 | `MPP_SWAP_PLAN_PRICE`      | Human-readable price for `GET /intel/swap-plan`                                                      | `0.12`                       |
 | `MPP_WEGLD_SWAP_ADDRESS`   | Optional WEGLD swap contract address used to attach executable `wrap-egld` / `unwrap-egld` templates | N/A                          |
 | `MPP_WEGLD_SWAP_GAS_LIMIT` | Gas limit used for WEGLD wrap and unwrap templates                                                   | `10000000`                   |
+| `MPP_VERIFICATION_RETRY_AFTER_SECONDS` | Suggested retry delay surfaced on retryable paid-intel `402` responses                           | `3`                          |
 | `MVX_ANALYTICS_API_URL`    | Base URL for public analytics lookups                                                                | `https://api.multiversx.com` |
 
 ## Discovery Endpoint
@@ -61,6 +62,8 @@ This file is used by AI agents to understand how to pay for services using MPP.
 The audit report endpoints are useful after running the example client with `MX_REPORT_DIR` or `MX_REPORT_FILE` in [`mppx-multiversx`](../mppx-multiversx). They let you ingest those JSON artifacts into the facilitator and query the latest outcomes centrally.
 
 The challenge inspection endpoint is useful when a payer sees repeated `402` responses after broadcasting. It returns the stored settlement row together with the latest verifier diagnostics, including attempt count, observed transaction status, last verifier status, and the last tx hash the facilitator examined.
+
+Paid intel endpoints now also enrich repeated `402` responses with verifier context when the facilitator has already seen a payment attempt. That response can include `retryable`, `retryAfterSeconds`, `verificationState`, and a nested `verification` object so clients can distinguish "pay now" from "same credential, retry shortly".
 
 The facilitator start scripts now build the local [`mppx-multiversx`](../mppx-multiversx) package first, and the service boot path creates any missing local SQLite tables and indexes automatically. That means a fresh local `DATABASE_URL=file:...` no longer needs a manual migration step before development starts.
 

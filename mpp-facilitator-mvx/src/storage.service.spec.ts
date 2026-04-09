@@ -180,6 +180,48 @@ describe('StorageService', () => {
     );
   });
 
+  it('preserves verifier diagnostics when a challenge is re-saved without them', async () => {
+    await service.save({
+      id: 'challenge-preserve',
+      txHash: '',
+      payer: 'erd1payer',
+      receiver: 'erd1recv',
+      amount: '100',
+      currency: 'EGLD',
+      chainId: 'D',
+      status: 'pending',
+      verificationAttempts: 2,
+      lastVerificationAt: new Date('2026-04-09T12:30:00Z'),
+      lastVerificationStatus: 'tx-not-found',
+      lastVerificationError: 'Transaction not found on the network',
+      lastObservedTxStatus: 'not-found',
+      lastVerificationTxHash: '0xold',
+      createdAt: new Date('2026-04-09T12:00:00Z'),
+      updatedAt: new Date('2026-04-09T12:30:00Z'),
+      expiresAt: null,
+    });
+
+    await service.save({
+      id: 'challenge-preserve',
+      receiver: 'erd1recv',
+      amount: '100',
+      currency: 'EGLD',
+      chainId: 'D',
+      updatedAt: new Date('2026-04-09T12:31:00Z'),
+      expiresAt: new Date('2026-04-09T12:40:00Z'),
+    });
+
+    const result = await service.get('challenge-preserve');
+    expect(result!.verificationAttempts).toBe(2);
+    expect(result!.lastVerificationStatus).toBe('tx-not-found');
+    expect(result!.lastVerificationError).toBe(
+      'Transaction not found on the network',
+    );
+    expect(result!.lastObservedTxStatus).toBe('not-found');
+    expect(result!.lastVerificationTxHash).toBe('0xold');
+    expect(result!.expiresAt).toEqual(new Date('2026-04-09T12:40:00Z'));
+  });
+
   it('should return correct count', async () => {
     expect(await service.count()).toBe(0);
 

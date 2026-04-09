@@ -11,8 +11,8 @@ export type SettlementVerificationDiagnostics = {
   verifiedAt?: Date;
 };
 
-export type SettlementRecordSaveInput =
-  Prisma.SettlementRecordUncheckedCreateInput;
+export type SettlementRecordSaveInput = Pick<SettlementRecord, 'id'> &
+  Partial<SettlementRecord>;
 
 @Injectable()
 export class StorageService {
@@ -24,6 +24,19 @@ export class StorageService {
 
   async save(record: SettlementRecordSaveInput): Promise<void> {
     const createData: Prisma.SettlementRecordUncheckedCreateInput = {
+      txHash: '',
+      payer: '',
+      receiver: '',
+      amount: '0',
+      currency: 'EGLD',
+      chainId: 'D',
+      status: 'pending',
+      expiresAt: null,
+      opaque: null,
+      digest: null,
+      source: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
       verificationAttempts: 0,
       lastVerificationAt: null,
       lastVerificationStatus: null,
@@ -32,9 +45,7 @@ export class StorageService {
       lastVerificationTxHash: null,
       ...record,
     };
-    const updateData: Prisma.SettlementRecordUncheckedUpdateInput = {
-      ...createData,
-    };
+    const updateData = this.toUpdateInput(record);
 
     await this.prisma.settlementRecord.upsert({
       where: { id: createData.id },
@@ -89,5 +100,13 @@ export class StorageService {
 
   async count(): Promise<number> {
     return this.prisma.settlementRecord.count();
+  }
+
+  private toUpdateInput(
+    record: SettlementRecordSaveInput,
+  ): Prisma.SettlementRecordUncheckedUpdateInput {
+    return Object.fromEntries(
+      Object.entries(record).filter(([, value]) => value !== undefined),
+    ) as Prisma.SettlementRecordUncheckedUpdateInput;
   }
 }
